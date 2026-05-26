@@ -78,6 +78,7 @@ opentelemetry-semantic-conventions = "0.14"
 tracing-opentelemetry = "0.23"
 prometheus = "0.13"
 lru = "0.12"
+regex = "1"
 
 [dev-dependencies]
 mockito = "1"
