@@ -1,0 +1,62 @@
+version: 2
+updates:
+  # Cargo dependencies
+  - package-ecosystem: "cargo"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+      time: "03:00"
+    open-pull-requests-limit: 10
+    reviewers:
+      - "synapse-bridgez/maintainers"
+    assignees:
+      - "synapse-bridgez/maintainers"
+    labels:
+      - "dependencies"
+      - "rust"
+    commit-message:
+      prefix: "chore(deps)"
+      prefix-development: "chore(deps-dev)"
+      include: "scope"
+    pull-request-branch-name:
+      separator: "/"
+    rebase-strategy: "auto"
+    allow:
+      - dependency-type: "direct"
+      - dependency-type: "indirect"
+    ignore:
+      # Pinned dependencies with documented reasons
+      - dependency-name: "home"
+        versions: [">=0.5.12"]  # Keep at 0.5.11 for stability
+    groups:
+      patch:
+        dependency-types:
+          - "patch"
+        update-types:
+          - "minor"
+          - "patch"
+      minor:
+        dependency-types:
+          - "minor"
+        update-types:
+          - "minor"
+      major:
+        dependency-types:
+          - "major"
+        update-types:
+          - "major"
+    # Auto-merge patch updates that pass CI
+    auto-merge:
+      - match:
+          dependency-type: "direct"
+          update-type: "patch"
+        auto-merge-method: "squash"
+        auto-merge-strategy: "auto"
+      - match:
+          dependency-type: "indirect"
+          update-type: "patch"
+        auto-merge-method: "squash"
+        auto-merge-strategy: "auto"
+    # Disable auto-merge for major/minor updates
+    # They require manual review
