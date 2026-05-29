@@ -1,3 +1,8 @@
+//! Database access layer.
+//!
+//! See [`webhook`] for the database contract used by inbound callback handlers,
+//! outgoing webhook delivery, and admin replay flows.
+
 use crate::config::Config;
 use sqlx::postgres::{PgPool, PgPoolOptions};
 use std::time::Duration;
@@ -10,6 +15,7 @@ pub mod pool_manager;
 pub mod queries;
 pub mod session;
 pub mod slow_query;
+pub mod webhook;
 
 /// Build a pool and eagerly establish `min_connections` by running `SELECT 1`
 /// on each connection before returning. Logs warm-up completion time.

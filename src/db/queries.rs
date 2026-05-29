@@ -99,6 +99,9 @@ pub async fn lookup_api_key(pool: &PgPool, api_key: &str) -> Result<bool> {
     Ok(row.is_some())
 }
 
+/// Load active tenant configuration used by request authentication and
+/// webhook signature validation. Secrets are returned for in-memory use only;
+/// callers must not log or persist them in audit records.
 pub async fn get_all_tenant_configs(pool: &PgPool) -> Result<Vec<TenantConfig>> {
     let configs = sqlx::query_as::<_, TenantConfig>(
         "SELECT tenant_id, name, webhook_secret, stellar_account, rate_limit_per_minute, is_active FROM tenants WHERE is_active = true",
@@ -130,6 +133,12 @@ pub async fn set_tenant_context(
 
 // --- Transaction Queries ---
 
+/// Insert a transaction created from an inbound webhook/callback payload.
+///
+/// The query binds every payload-derived value, writes the matching audit log
+/// entry in the same SQL transaction, and invalidates aggregate caches only
+/// after commit. Handlers should use this helper instead of issuing their own
+/// INSERT so webhook persistence remains auditable and timeout protected.
 pub async fn insert_transaction(pool: &PgPool, tx: &Transaction) -> Result<Transaction> {
     with_timeout(
         QueryTier::Write,
@@ -1311,6 +1320,10 @@ pub async fn get_asset_stats(pool: &PgPool) -> Result<Vec<AssetStats>> {
 }
 
 // --- Idempotency Fallback Queries ---
+//
+// Webhook handlers and replay flows can use these helpers to avoid processing
+// the same upstream request twice when an idempotency key is available. Keep
+// keys and stored responses out of logs; all values are parameter-bound.
 
 #[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow)]
 pub struct IdempotencyKey {
