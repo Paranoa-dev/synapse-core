@@ -2,10 +2,81 @@
 //!
 //! Provides token bucket and sliding window rate limiting strategies
 //! with configurable limits and time windows.
+//!
+//! ## Overview
+//!
+//! Rate limiting is a critical security measure that protects APIs from abuse,
+//! prevents denial-of-service attacks, and ensures fair resource allocation.
+//! This module implements two popular rate limiting algorithms:
+//!
+//! - **Token Bucket**: Allows burst traffic while maintaining an average rate
+//! - **Sliding Window**: Provides smoother rate limiting with no burst allowance
+//!
+//! ## Security Considerations
+//!
+//! 1. **Defense Against DoS**: Rate limits prevent attackers from overwhelming
+//!    the system with excessive requests.
+//!
+//! 2. **Resource Protection**: Ensures fair usage by limiting per-client requests.
+//!
+//! 3. **Cost Control**: Prevents unexpected billing from third-party APIs that
+//!    charge per request.
+//!
+//! ## Usage
+//!
+//! ```rust
+//! use cache::rate_limiting::{RateLimiter, RateLimitConfig, RateLimitStrategy};
+//! use std::time::Duration;
+//!
+//! // Create a rate limiter allowing 100 requests per minute
+//! let config = RateLimitConfig {
+//!     max_requests: 100,
+//!     window: Duration::from_secs(60),
+//!     strategy: RateLimitStrategy::TokenBucket,
+//! };
+//! let mut limiter = RateLimiter::with_config(config);
+//!
+//! // Try to acquire a token for each request
+//! if limiter.try_acquire() {
+//!     // Process request
+//! } else {
+//!     // Return 429 Too Many Requests
+//! }
+//! ```
+//!
+//! ## Architecture
+//!
+//! The rate limiter operates in-memory and can be paired with Redis for
+//! distributed rate limiting across multiple application instances.
+//! The token bucket algorithm works as follows:
+//!
+//! 1. Bucket starts full with `max_requests` tokens
+//! 2. Each request consumes 1 token
+//! 3. Tokens are refilled at a constant rate over the window period
+//! 4. When bucket is empty, requests are rejected
 
 use std::time::Duration;
 
 /// Rate limiting configuration
+///
+/// # Fields
+///
+/// * `max_requests` - Maximum number of requests allowed within the time window
+/// * `window` - Duration of the time window
+/// * `strategy` - Algorithm to use for rate limiting
+///
+/// # Example
+///
+/// ```
+/// use cache::rate_limiting::{RateLimitConfig, RateLimitStrategy};
+/// use std::time::Duration;
+///
+/// let config = RateLimitConfig {
+///     max_requests: 100,
+///     window: Duration::from_secs(60),
+///     strategy: RateLimitStrategy::TokenBucket,
+/// };
+/// ```
 #[derive(Debug, Clone)]
 pub struct RateLimitConfig {
     /// Maximum number of requests allowed
@@ -36,6 +107,29 @@ impl Default for RateLimitConfig {
 }
 
 /// Rate limiter for controlling request rates
+///
+/// Implements the token bucket algorithm for efficient rate limiting.
+/// The limiter tracks available tokens and refills them over time.
+///
+/// # Example
+///
+/// ```
+/// use cache::rate_limiting::{RateLimiter, RateLimitConfig};
+/// use std::time::Duration;
+///
+/// let config = RateLimitConfig {
+///     max_requests: 100,
+///     window: Duration::from_secs(60),
+///     ..Default::default()
+/// };
+/// let mut limiter = RateLimiter::with_config(config);
+///
+/// // For each incoming request
+/// match limiter.try_acquire() {
+///     true => println!("Request allowed"),
+///     false => println!("Rate limit exceeded"),
+/// }
+/// ```
 #[derive(Debug, Clone)]
 pub struct RateLimiter {
     config: RateLimitConfig,
@@ -60,7 +154,26 @@ impl RateLimiter {
 
     /// Attempts to acquire a token for a request
     ///
-    /// Returns `true` if a token was available, `false` otherwise
+    /// Returns `true` if a token was available and the request is allowed.
+    /// Returns `false` if no tokens are available and the request should be rejected.
+    ///
+    /// # Behavior
+    ///
+    /// - Automatically refills tokens based on elapsed time
+    /// - Consumes 1 token on success
+    /// - Does not consume a token if none are available
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// let mut limiter = RateLimiter::new();
+    ///
+    /// if limiter.try_acquire() {
+    ///     // Process the request
+    /// } else {
+    ///     // Return 429 Too Many Requests to client
+    /// }
+    /// ```
     pub fn try_acquire(&mut self) -> bool {
         self.refill_tokens();
 
@@ -72,9 +185,23 @@ impl RateLimiter {
         }
     }
 
-    /// Attempts to acquire multiple tokens
+    /// Attempts to acquire multiple tokens (for batch operations)
     ///
-    /// Returns `true` if enough tokens were available, `false` otherwise
+    /// Useful for endpoints that perform multiple operations in a single request.
+    /// Returns `true` if all requested tokens were available, `false` otherwise.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// let mut limiter = RateLimiter::new();
+    ///
+    /// // Bulk operation requires 5 tokens
+    /// if limiter.try_acquire_batch(5) {
+    ///     // Process bulk request
+    /// } else {
+    ///     // Reject - not enough tokens
+    /// }
+    /// ```
     pub fn try_acquire_batch(&mut self, count: u32) -> bool {
         self.refill_tokens();
 
@@ -87,6 +214,19 @@ impl RateLimiter {
     }
 
     /// Returns the number of available tokens
+    ///
+    /// Useful for displaying rate limit status to clients via headers.
+    /// Automatically refills tokens before counting.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// let mut limiter = RateLimiter::new();
+    ///
+    /// // Check remaining quota
+    /// let remaining = limiter.available_tokens();
+    /// println!("{} requests remaining", remaining);
+    /// ```
     pub fn available_tokens(&mut self) -> u32 {
         self.refill_tokens();
         self.tokens
