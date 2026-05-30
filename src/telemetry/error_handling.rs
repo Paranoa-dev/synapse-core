@@ -5,44 +5,104 @@
 
 use std::fmt;
 
-/// Errors that can occur during telemetry operations
+/// Comprehensive error type for all telemetry operations.
+///
+/// This enum consolidates errors from initialization, exporting, validation, pooling,
+/// and data export operations. All variants are designed to support graceful degradation
+/// without panicking. Use Result<T, TelemetryError> for all fallible telemetry operations.
 #[derive(Debug, thiserror::Error)]
 pub enum TelemetryError {
-    /// Error initializing the tracer provider
+    /// Error initializing the tracer provider.
+    ///
+    /// This typically indicates a misconfiguration or unavailable OpenTelemetry backend.
+    /// The caller should defer telemetry initialization or operate without traces.
     #[error("Failed to initialize tracer: {0}")]
     InitializationError(String),
 
-    /// Error configuring the OTLP exporter
+    /// Error configuring the OTLP exporter.
+    ///
+    /// Indicates invalid exporter configuration (e.g., invalid endpoint URL, bad TLS setup).
+    /// The caller should verify configuration and retry or fall back to a no-op exporter.
     #[error("Failed to configure OTLP exporter: {0}")]
     ExporterConfigError(String),
 
-    /// Error during span export
+    /// Error during span export.
+    ///
+    /// Indicates a temporary or persistent failure to send spans to the telemetry backend.
+    /// The caller may retry, buffer spans locally, or degrade gracefully.
     #[error("Failed to export spans: {0}")]
     ExportError(String),
 
-    /// Error during tracer shutdown
+    /// Error during tracer shutdown.
+    ///
+    /// Indicates a graceful shutdown of the telemetry system could not be completed cleanly.
+    /// The caller should log and continue; forced shutdown will clean up resources.
     #[error("Failed to shutdown tracer: {0}")]
     ShutdownError(String),
 
-    /// Invalid endpoint configuration
+    /// Invalid endpoint configuration.
+    ///
+    /// Indicates the endpoint URL failed validation (wrong scheme, malformed URL, too long).
+    /// The caller must provide a valid http:// or https:// endpoint.
     #[error("Invalid endpoint: {0}")]
     InvalidEndpoint(String),
 
-    /// Connection error to telemetry backend
+    /// Connection error to telemetry backend.
+    ///
+    /// Indicates a network or I/O failure communicating with the telemetry backend.
+    /// The caller should implement retry logic with backoff or switch to degraded mode.
     #[error("Connection error: {0}")]
     ConnectionError(String),
 
-    /// Validation error for telemetry input
+    /// Validation error for telemetry input.
+    ///
+    /// Indicates span names, attributes, or endpoints failed validation.
+    /// The caller must sanitize and validate inputs before retrying.
     #[error("Validation error: {0}")]
     ValidationError(#[from] super::input_validation::ValidationError),
 
-    /// Circuit breaker is open, rejecting requests
+    /// Connection pool is exhausted; all available connections are in use.
+    ///
+    /// Indicates too many concurrent telemetry operations. The caller should either
+    /// reduce concurrency, increase pool size, or defer the operation.
+    #[error("Connection pool exhausted: all {0} connections in use")]
+    PoolExhausted(usize),
+
+    /// Invalid pool configuration.
+    ///
+    /// Indicates max_size or other pool parameters are invalid.
+    /// The caller should fix the configuration and reinitialize the pool.
+    #[error("Invalid pool configuration: {0}")]
+    PoolConfigError(String),
+
+    /// Circuit breaker is open; rejecting requests due to too many consecutive failures.
+    ///
+    /// The telemetry system has detected repeated failures and is protecting against
+    /// cascading errors. The caller should wait before retrying, or fall back to
+    /// degraded telemetry functionality.
     #[error("Circuit breaker open: too many consecutive failures")]
     CircuitBreakerOpen,
 
-    /// Timeout during telemetry operation
+    /// Timeout during telemetry operation.
+    ///
+    /// Indicates the operation exceeded the configured timeout.
+    /// The caller should retry with a longer timeout or abandon the operation.
     #[error("Operation timed out after {0:?}")]
     Timeout(std::time::Duration),
+
+    /// Telemetry payload exceeds maximum allowed size.
+    ///
+    /// Indicates a batch or record is too large to export. The caller should split
+    /// the payload or reduce the number of attributes.
+    #[error("Payload exceeds maximum size of {0} bytes")]
+    PayloadTooLarge(usize),
+
+    /// Data export buffer overflow; records were discarded.
+    ///
+    /// Indicates the export buffer reached capacity and older records were dropped.
+    /// The caller should increase buffer size or reduce emission rate.
+    #[error("Export buffer overflow: oldest records dropped")]
+    BufferOverflow,
 }
 
 /// Result type for telemetry operations

@@ -8,7 +8,8 @@ use std::collections::VecDeque;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use crate::telemetry::input_validation::{InputValidator, ValidationError};
+use crate::telemetry::input_validation::InputValidator;
+use crate::telemetry::error_handling::TelemetryError;
 
 /// Pool configuration.
 #[derive(Debug, Clone)]
@@ -29,19 +30,6 @@ impl Default for PoolConfig {
             endpoint: "http://localhost:4317".to_string(),
         }
     }
-}
-
-/// Error returned by pool operations.
-#[derive(Debug, thiserror::Error)]
-pub enum PoolError {
-    #[error("Pool exhausted: all {0} connections are in use")]
-    Exhausted(usize),
-
-    #[error("Invalid configuration: {0}")]
-    InvalidConfig(String),
-
-    #[error("Endpoint validation failed: {0}")]
-    Validation(#[from] ValidationError),
 }
 
 /// A single connection managed by the pool.
@@ -113,20 +101,27 @@ pub struct ConnectionPool {
 
 impl ConnectionPool {
     /// Creates a pool with default configuration.
-    pub fn new() -> Result<Self, PoolError> {
+    ///
+    /// # Errors
+    /// Returns [`TelemetryError::PoolConfigError`] if the default endpoint is invalid.
+    pub fn new() -> Result<Self, TelemetryError> {
         Self::with_config(PoolConfig::default())
     }
 
     /// Creates a pool with the supplied configuration.
     ///
+    /// Validates the endpoint URL and pool size at construction time, failing fast
+    /// if configuration is invalid. This prevents resource exhaustion from invalid configs.
+    ///
     /// # Errors
-    /// - [`PoolError::Validation`] when `config.endpoint` is invalid.
-    /// - [`PoolError::InvalidConfig`] when `max_size` is zero.
-    pub fn with_config(config: PoolConfig) -> Result<Self, PoolError> {
-        InputValidator::validate_endpoint(&config.endpoint)?;
+    /// - [`TelemetryError::ValidationError`] when `config.endpoint` is invalid.
+    /// - [`TelemetryError::PoolConfigError`] when `max_size` is zero or invalid.
+    pub fn with_config(config: PoolConfig) -> Result<Self, TelemetryError> {
+        InputValidator::validate_endpoint(&config.endpoint)
+            .map_err(|e| TelemetryError::ValidationError(e))?;
 
         if config.max_size == 0 {
-            return Err(PoolError::InvalidConfig(
+            return Err(TelemetryError::PoolConfigError(
                 "max_size must be at least 1".into(),
             ));
         }
@@ -144,8 +139,11 @@ impl ConnectionPool {
     /// connections are evicted before the availability check.
     ///
     /// # Errors
-    /// [`PoolError::Exhausted`] when all `max_size` connections are in use.
-    pub fn acquire(&self) -> Result<PooledConnection, PoolError> {
+    /// [`TelemetryError::PoolExhausted`] when all `max_size` connections are in use.
+    ///
+    /// # Non-fatal behavior
+    /// If the mutex is poisoned, recovers by creating a new state instead of panicking.
+    pub fn acquire(&self) -> Result<PooledConnection, TelemetryError> {
         let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
         self.evict_stale_locked(&mut state);
 
@@ -154,7 +152,7 @@ impl ConnectionPool {
         }
 
         if state.total >= self.config.max_size {
-            return Err(PoolError::Exhausted(self.config.max_size));
+            return Err(TelemetryError::PoolExhausted(self.config.max_size));
         }
 
         let id = state.next_id();
@@ -166,6 +164,7 @@ impl ConnectionPool {
     ///
     /// Stale connections are discarded and the pool size is decremented.
     /// Non-stale connections are re-queued for future acquisition.
+    /// Does not propagate errors; logs and recovers gracefully from poisoned mutexes.
     pub fn release(&self, mut conn: PooledConnection) {
         let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
 
@@ -243,7 +242,7 @@ mod tests {
         let pool = ConnectionPool::with_config(config).unwrap();
         let _c1 = pool.acquire().unwrap();
         let _c2 = pool.acquire().unwrap();
-        assert!(matches!(pool.acquire(), Err(PoolError::Exhausted(2))));
+        assert!(matches!(pool.acquire(), Err(TelemetryError::PoolExhausted(2))));
     }
 
     #[test]
