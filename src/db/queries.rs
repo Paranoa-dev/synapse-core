@@ -1,3 +1,35 @@
+//! # Database Query Module
+//!
+//! This module provides a secure, tested, and well-documented error handling interface for sqlx queries.
+//!
+//! ## Error Handling Strategy
+//!
+//! Errors are handled at multiple layers:
+//! - **Timeout layer**: Queries wrapped with [`with_timeout`] abort if they exceed tier-specific limits
+//! - **Connection layer**: sqlx handles connection errors and pool exhaustion
+//! - **Application layer**: All errors are mapped to [`sqlx::Error`] for consistency
+//!
+//! ## Timeout Tiers
+//!
+//! All queries must be wrapped with an appropriate [`QueryTier`] to enforce safety limits:
+//! - **Read** (5s default): SELECT operations on bounded result sets
+//! - **Write** (10s default): INSERT/UPDATE/DELETE operations with retry logic
+//! - **Admin** (60s default): Large migrations and maintenance tasks
+//!
+//! Overrides via environment: `DB_TIMEOUT_READ_SECS`, `DB_TIMEOUT_WRITE_SECS`, `DB_TIMEOUT_ADMIN_SECS`
+//!
+//! ## Error Recovery
+//!
+//! - **Timeouts**: Increment [`DB_QUERY_TIMEOUT_TOTAL`] counter; connection dropped; returns `PoolTimedOut`
+//! - **Connection failures**: Retried with exponential backoff via [`crate::utils::retry::retry_with_backoff`]
+//! - **Row errors**: Propagated as `sqlx::Error` to caller for logging/handling
+//!
+//! ## Security Considerations
+//!
+//! - All queries use parameterized statements ($1, $2...) to prevent SQL injection
+//! - Tenant context set via [`set_tenant_context`] for RLS policy enforcement
+//! - Sensitive data (passwords, tokens) never logged; only query structure logged
+
 use crate::db::audit::{AuditLog, ENTITY_TRANSACTION};
 use crate::db::models::{Settlement, Transaction};
 use crate::tenant::TenantConfig;
@@ -26,6 +58,15 @@ const DEFAULT_ADMIN_TIMEOUT_SECS: u64 = 60;
 pub static DB_QUERY_TIMEOUT_TOTAL: AtomicU64 = AtomicU64::new(0);
 
 /// Tier used when wrapping a query with [`with_timeout`].
+///
+/// # Examples
+/// ```ignore
+/// // SELECT query: read tier, 5s timeout
+/// with_timeout(QueryTier::Read, "SELECT * FROM users", query_future).await?;
+///
+/// // INSERT with retry: write tier, 10s timeout
+/// with_timeout(QueryTier::Write, "INSERT INTO transactions", query_future).await?;
+/// ```
 #[derive(Debug, Clone, Copy)]
 pub enum QueryTier {
     Read,
@@ -34,6 +75,7 @@ pub enum QueryTier {
 }
 
 impl QueryTier {
+    /// Get timeout duration for this tier, respecting environment variable overrides.
     fn duration(self) -> Duration {
         let secs = match self {
             QueryTier::Read => std::env::var("DB_TIMEOUT_READ_SECS")
@@ -52,6 +94,7 @@ impl QueryTier {
         Duration::from_secs(secs)
     }
 
+    /// Label for logging: "read", "write", or "admin".
     fn label(self) -> &'static str {
         match self {
             QueryTier::Read => "read",
@@ -63,9 +106,34 @@ impl QueryTier {
 
 /// Wrap a database future with a timeout.
 ///
-/// On timeout the counter `DB_QUERY_TIMEOUT_TOTAL` is incremented, the
-/// sanitised SQL label is logged (no parameter values), and the connection is
-/// dropped so the pool can reclaim it rather than leaving it in a hung state.
+/// Enforces tier-specific timeout limits and manages error handling:
+/// - On **success**: returns result immediately
+/// - On **timeout**: increments [`DB_QUERY_TIMEOUT_TOTAL`], logs error with sql_label (no params),
+///   drops connection from pool, returns `PoolTimedOut`
+/// - On **error**: propagates the underlying error to caller
+///
+/// # Parameters
+/// - `tier`: Timeout tier (Read/Write/Admin) determining max duration
+/// - `sql_label`: Descriptive label for logging (e.g. "SELECT * FROM users"). Must not contain param values.
+/// - `fut`: The database operation future
+///
+/// # Error Handling
+/// Returns `sqlx::Error::PoolTimedOut` if query exceeds tier-specific timeout.
+/// Other errors are propagated as-is.
+///
+/// # Examples
+/// ```ignore
+/// // Wrap a read query
+/// with_timeout(QueryTier::Read, "SELECT * FROM users WHERE id = $1", async {
+///     sqlx::query("SELECT * FROM users WHERE id = $1")
+///         .bind(user_id)
+///         .fetch_one(pool)
+///         .await
+/// }).await?;
+/// ```
+///
+/// # Metrics
+/// Timeout occurrences increment the global counter `DB_QUERY_TIMEOUT_TOTAL` for monitoring.
 pub async fn with_timeout<F, T>(tier: QueryTier, sql_label: &str, fut: F) -> Result<T>
 where
     F: std::future::Future<Output = Result<T>>,
@@ -99,6 +167,9 @@ pub async fn lookup_api_key(pool: &PgPool, api_key: &str) -> Result<bool> {
     Ok(row.is_some())
 }
 
+/// Load active tenant configuration used by request authentication and
+/// webhook signature validation. Secrets are returned for in-memory use only;
+/// callers must not log or persist them in audit records.
 pub async fn get_all_tenant_configs(pool: &PgPool) -> Result<Vec<TenantConfig>> {
     let configs = sqlx::query_as::<_, TenantConfig>(
         "SELECT tenant_id, name, webhook_secret, stellar_account, rate_limit_per_minute, is_active FROM tenants WHERE is_active = true",
@@ -147,12 +218,21 @@ pub async fn set_tenant_context(
 
 // --- Transaction Queries ---
 
-async fn persist_transaction(
-    db_tx: &mut SqlxTransaction<'_, Postgres>,
-    tx: &Transaction,
-) -> Result<Transaction> {
-    sqlx::query_as::<_, Transaction>(
-        r#"
+/// Insert a transaction created from an inbound webhook/callback payload.
+///
+/// The query binds every payload-derived value, writes the matching audit log
+/// entry in the same SQL transaction, and invalidates aggregate caches only
+/// after commit. Handlers should use this helper instead of issuing their own
+/// INSERT so webhook persistence remains auditable and timeout protected.
+pub async fn insert_transaction(pool: &PgPool, tx: &Transaction) -> Result<Transaction> {
+    with_timeout(
+        QueryTier::Write,
+        "INSERT INTO transactions ... RETURNING *",
+        crate::utils::retry::retry_with_backoff("insert_transaction", 3, 100, || async {
+            let mut db_tx = pool.begin().await?;
+
+            let result = sqlx::query_as::<_, Transaction>(
+                r#"
             INSERT INTO transactions (
                 id, stellar_account, amount, asset_code, status,
                 created_at, updated_at, anchor_transaction_id, callback_type, callback_status,
@@ -1340,6 +1420,10 @@ pub async fn get_asset_stats(pool: &PgPool) -> Result<Vec<AssetStats>> {
 }
 
 // --- Idempotency Fallback Queries ---
+//
+// Webhook handlers and replay flows can use these helpers to avoid processing
+// the same upstream request twice when an idempotency key is available. Keep
+// keys and stored responses out of logs; all values are parameter-bound.
 
 #[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow)]
 pub struct IdempotencyKey {
