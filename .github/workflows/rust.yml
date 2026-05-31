@@ -17,12 +17,13 @@ env:
   RUSTC_WRAPPER: sccache
   SCCACHE_CACHE_SIZE: 1G
   COVERAGE_IGNORE_REGEX: '(^|.*/)(tests?/.*|generated/.*|\.sqlx/.*)$'
-
-# Cancel in-progress runs for the same branch/PR to avoid wasted runner time
-# and stale session state from concurrent jobs sharing the same cache keys.
-concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+  # CI pool sizing: keep connections low to match the single-node test DB.
+  # These are picked up by Config::load() via DB_MIN_CONNECTIONS / DB_MAX_CONNECTIONS.
+  DB_MIN_CONNECTIONS: "2"
+  DB_MAX_CONNECTIONS: "10"
+  DB_IDLE_TIMEOUT_SECS: "30"
+  DB_STATEMENT_TIMEOUT_MS: "30000"
+  DB_LONG_RUNNING_STATEMENT_TIMEOUT_MS: "120000"
 
 jobs:
   unit-tests:
@@ -98,14 +99,6 @@ jobs:
 
     - name: Run migrations
       id: run_migrations
-      run: |
-        set -e
-        echo "Starting database migrations..."
-        if ! sqlx migrate run; then
-          echo "::error::Migration failed. Check migration files for errors."
-          exit 1
-        fi
-        echo "Migrations completed successfully"
       run: |
         for i in 1 2 3; do
           sqlx migrate run && break
@@ -234,6 +227,9 @@ jobs:
     - name: Install sccache
       uses: taiki-e/install-action@sccache
 
+    - name: Start sccache session
+      run: sccache --start-server || true
+
     - name: Cache Cargo registry and build artifacts
       uses: actions/cache@v4
       with:
@@ -333,6 +329,9 @@ jobs:
 
     - name: Install sccache
       uses: taiki-e/install-action@sccache
+
+    - name: Start sccache session
+      run: sccache --start-server || true
 
     - name: Cache Cargo registry and build artifacts
       uses: actions/cache@v4
