@@ -218,6 +218,15 @@ impl RateLimiter {
         Some(Duration::from_millis(remaining_ms))
     }
 
+    /// Returns a snapshot of the rate-limiter metrics.
+    pub fn metrics(&self) -> CacheMetrics {
+        CacheMetrics {
+            acquired_requests: self.inner.acquired.load(Ordering::Relaxed),
+            rejected_requests: self.inner.rejected.load(Ordering::Relaxed),
+            refill_events: self.inner.refills.load(Ordering::Relaxed),
+        }
+    }
+
     /// Resets the rate limiter to a full token bucket.
     pub fn reset(&self) {
         self.inner.tokens.store(self.config.max_requests, Ordering::Release);
