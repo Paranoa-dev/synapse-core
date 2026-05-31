@@ -1,341 +1,112 @@
-//! Error types for the Security module — rate limiting and input validation.
+//! Error types for the Security module.
 //!
-//! # Error Hierarchy
+//! [`SecurityError`] is the single error type returned by security checks in
+//! this module — rate limiting ([`RateLimiter`](crate::cache::rate_limiting::RateLimiter))
+//! and session validation ([`validate_session`](crate::security::session::validate_session),
+//! [`validate_session_params`](crate::security::session::validate_session_params)).
 //!
-//! ```text
-//! SecurityError
-//! ├── RateLimit   — request throttling violations
-//! └── Validation  — input constraint violations
-//! ```
+//! # Error categories
 //!
-//! # HTTP Mapping
+//! | Variant | HTTP | Stable code |
+//! |---------|------|-------------|
+//! | [`RateLimitExceeded`](SecurityError::RateLimitExceeded) | 429 | `ERR_SECURITY_001` |
+//! | [`SessionValidation`](SecurityError::SessionValidation) | 400 | `ERR_SECURITY_002` |
 //!
-//! | Variant | HTTP Status | Stable Code |
-//! |---------|-------------|-------------|
-//! | `RateLimit::Exceeded` | 429 | `ERR_SEC_001` |
-//! | `RateLimit::BurstExceeded` | 429 | `ERR_SEC_002` |
-//! | `RateLimit::InvalidConfig` | 500 | `ERR_SEC_003` |
-//! | `Validation::EmptyInput` | 400 | `ERR_SEC_010` |
-//! | `Validation::InputTooLong` | 400 | `ERR_SEC_011` |
-//! | `Validation::InvalidCharacters` | 400 | `ERR_SEC_012` |
-//! | `Validation::InvalidFormat` | 400 | `ERR_SEC_013` |
+//! # Security notes
 //!
-//! # Security Considerations
-//!
-//! - Error messages **never** include raw user input to prevent log injection.
-//! - `RateLimit::Exceeded` exposes `retry_after_secs` so clients can back off
-//!   without probing the server.
-//! - All variants implement `std::error::Error` via [`thiserror`] so they
-//!   compose cleanly with `?` and `anyhow`.
+//! - `RateLimitExceeded` intentionally carries no internal state (token counts,
+//!   bucket configuration) to avoid leaking rate-limit parameters to callers.
+//! - `SessionValidation` wraps [`SessionValidationError`] whose `Display` impl
+//!   is safe to surface to clients — it never includes raw database values or
+//!   internal identifiers.
 //!
 //! # Example
 //!
 //! ```rust
-//! use synapse_core::security::error::{RateLimitError, ValidationError, SecurityError};
+//! use synapse_core::security::error::SecurityError;
+//! use synapse_core::security::session::{validate_session_params, SessionValidationError};
 //!
-//! fn check_key(key: &str) -> Result<(), SecurityError> {
-//!     if key.is_empty() {
-//!         return Err(ValidationError::EmptyInput { field: "api_key" }.into());
-//!     }
-//!     Ok(())
+//! fn check(user_id: &str, ttl: i64) -> Result<(), SecurityError> {
+//!     validate_session_params(user_id, ttl).map_err(SecurityError::SessionValidation)
 //! }
+//!
+//! assert!(matches!(check("", 3600), Err(SecurityError::SessionValidation(SessionValidationError::EmptyUserId))));
 //! ```
 
 use thiserror::Error;
 
-// ---------------------------------------------------------------------------
-// Rate-limit errors
-// ---------------------------------------------------------------------------
+use crate::security::session::SessionValidationError;
 
-/// Errors produced by the rate-limiting subsystem.
-#[derive(Debug, Error, PartialEq, Eq)]
-pub enum RateLimitError {
-    /// The caller has exhausted their request quota for the current window.
-    ///
-    /// `retry_after_secs` is the number of seconds the caller should wait
-    /// before retrying. Expose this in the `Retry-After` HTTP response header.
-    #[error("rate limit exceeded; retry after {retry_after_secs}s")]
-    Exceeded {
-        /// Seconds until the rate-limit window resets.
-        retry_after_secs: u64,
-    },
-
-    /// The caller exceeded the short-burst allowance (e.g. 10 req/s).
-    ///
-    /// Distinct from `Exceeded` so callers can differentiate sustained
-    /// overload from momentary spikes.
-    #[error("burst limit exceeded; retry after {retry_after_secs}s")]
-    BurstExceeded {
-        /// Seconds until the burst window resets.
-        retry_after_secs: u64,
-    },
-
-    /// The rate-limit configuration is internally inconsistent (e.g. zero
-    /// `max_requests` or a zero-duration window). This is a programming error
-    /// and should never reach production.
-    #[error("invalid rate-limit configuration: {reason}")]
-    InvalidConfig {
-        /// Human-readable description of the misconfiguration.
-        reason: &'static str,
-    },
-}
-
-impl RateLimitError {
-    /// HTTP status code for this error (always 429 for limit violations, 500
-    /// for configuration errors).
-    pub fn status_code(&self) -> u16 {
-        match self {
-            Self::Exceeded { .. } | Self::BurstExceeded { .. } => 429,
-            Self::InvalidConfig { .. } => 500,
-        }
-    }
-
-    /// Stable, machine-readable error code.
-    pub fn code(&self) -> &'static str {
-        match self {
-            Self::Exceeded { .. } => "ERR_SEC_001",
-            Self::BurstExceeded { .. } => "ERR_SEC_002",
-            Self::InvalidConfig { .. } => "ERR_SEC_003",
-        }
-    }
-
-    /// Seconds until the client may retry, if applicable.
-    ///
-    /// Returns `None` for configuration errors where retrying immediately
-    /// would not help.
-    pub fn retry_after_secs(&self) -> Option<u64> {
-        match self {
-            Self::Exceeded { retry_after_secs } | Self::BurstExceeded { retry_after_secs } => {
-                Some(*retry_after_secs)
-            }
-            Self::InvalidConfig { .. } => None,
-        }
-    }
-}
-
-// ---------------------------------------------------------------------------
-// Validation errors
-// ---------------------------------------------------------------------------
-
-/// Errors produced by security-layer input validation.
-///
-/// These are checked **before** any business logic runs so that malformed or
-/// oversized inputs are rejected at the boundary.
-#[derive(Debug, Error, PartialEq, Eq)]
-pub enum ValidationError {
-    /// A required field was empty.
-    #[error("field '{field}' must not be empty")]
-    EmptyInput {
-        /// Name of the field that was empty (e.g. `"api_key"`).
-        field: &'static str,
-    },
-
-    /// A field exceeded its maximum allowed length.
-    #[error("field '{field}' exceeds maximum length of {max_len} characters")]
-    InputTooLong {
-        /// Name of the field.
-        field: &'static str,
-        /// Maximum allowed length in characters.
-        max_len: usize,
-    },
-
-    /// A field contained characters outside the allowed set.
-    ///
-    /// The raw input is **not** included in the message to prevent log
-    /// injection. Callers should log the field name only.
-    #[error("field '{field}' contains invalid characters")]
-    InvalidCharacters {
-        /// Name of the field.
-        field: &'static str,
-    },
-
-    /// A field did not match the expected format (e.g. UUID, IP address).
-    #[error("field '{field}' has invalid format: {reason}")]
-    InvalidFormat {
-        /// Name of the field.
-        field: &'static str,
-        /// Short description of the expected format.
-        reason: &'static str,
-    },
-}
-
-impl ValidationError {
-    /// HTTP status code (always 400 for validation errors).
-    pub fn status_code(&self) -> u16 {
-        400
-    }
-
-    /// Stable, machine-readable error code.
-    pub fn code(&self) -> &'static str {
-        match self {
-            Self::EmptyInput { .. } => "ERR_SEC_010",
-            Self::InputTooLong { .. } => "ERR_SEC_011",
-            Self::InvalidCharacters { .. } => "ERR_SEC_012",
-            Self::InvalidFormat { .. } => "ERR_SEC_013",
-        }
-    }
-}
-
-// ---------------------------------------------------------------------------
-// Top-level SecurityError
-// ---------------------------------------------------------------------------
-
-/// Top-level error type for the security module.
-///
-/// Wraps [`RateLimitError`] and [`ValidationError`] so callers can handle
-/// both with a single `match` arm or propagate them uniformly via `?`.
+/// Errors produced by security checks (rate limiting and session validation).
 #[derive(Debug, Error)]
 pub enum SecurityError {
-    /// A rate-limiting constraint was violated.
-    #[error(transparent)]
-    RateLimit(#[from] RateLimitError),
+    /// The caller has exceeded the allowed request rate.
+    ///
+    /// Callers should back off and retry after the window resets.  The HTTP
+    /// layer maps this to **429 Too Many Requests**.
+    #[error("Rate limit exceeded")]
+    RateLimitExceeded,
 
-    /// An input validation constraint was violated.
-    #[error(transparent)]
-    Validation(#[from] ValidationError),
+    /// A session parameter or session record failed validation.
+    ///
+    /// The inner [`SessionValidationError`] provides a client-safe description
+    /// of the specific constraint that was violated.  The HTTP layer maps this
+    /// to **400 Bad Request**.
+    #[error("Session validation failed: {0}")]
+    SessionValidation(#[from] SessionValidationError),
 }
 
 impl SecurityError {
     /// HTTP status code for this error.
     pub fn status_code(&self) -> u16 {
         match self {
-            Self::RateLimit(e) => e.status_code(),
-            Self::Validation(e) => e.status_code(),
+            SecurityError::RateLimitExceeded => 429,
+            SecurityError::SessionValidation(_) => 400,
         }
     }
 
-    /// Stable, machine-readable error code.
+    /// Stable error code for programmatic handling.
+    ///
+    /// These codes are stable across releases and safe to include in API
+    /// responses.  See `src/error.rs` for the full catalogue.
     pub fn code(&self) -> &'static str {
         match self {
-            Self::RateLimit(e) => e.code(),
-            Self::Validation(e) => e.code(),
+            SecurityError::RateLimitExceeded => "ERR_SECURITY_001",
+            SecurityError::SessionValidation(_) => "ERR_SECURITY_002",
         }
-    }
-
-    /// Optional retry delay for rate-limit violations.
-    pub fn retry_after_secs(&self) -> Option<u64> {
-        match self {
-            Self::RateLimit(e) => e.retry_after_secs(),
-            Self::Validation(_) => None,
-        }
-    }
-
-    /// Returns `true` when the error maps to a 4xx HTTP status.
-    pub fn is_client_error(&self) -> bool {
-        self.status_code() < 500
     }
 }
-
-// ---------------------------------------------------------------------------
-// Tests
-// ---------------------------------------------------------------------------
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    // ── RateLimitError ───────────────────────────────────────────────────────
-
     #[test]
     fn rate_limit_exceeded_status_and_code() {
-        let e = RateLimitError::Exceeded { retry_after_secs: 30 };
+        let e = SecurityError::RateLimitExceeded;
         assert_eq!(e.status_code(), 429);
-        assert_eq!(e.code(), "ERR_SEC_001");
-        assert_eq!(e.retry_after_secs(), Some(30));
+        assert_eq!(e.code(), "ERR_SECURITY_001");
+        assert_eq!(e.to_string(), "Rate limit exceeded");
     }
 
     #[test]
-    fn burst_exceeded_status_and_code() {
-        let e = RateLimitError::BurstExceeded { retry_after_secs: 5 };
-        assert_eq!(e.status_code(), 429);
-        assert_eq!(e.code(), "ERR_SEC_002");
-        assert_eq!(e.retry_after_secs(), Some(5));
-    }
-
-    #[test]
-    fn invalid_config_status_and_code() {
-        let e = RateLimitError::InvalidConfig { reason: "max_requests is zero" };
-        assert_eq!(e.status_code(), 500);
-        assert_eq!(e.code(), "ERR_SEC_003");
-        assert_eq!(e.retry_after_secs(), None);
-    }
-
-    #[test]
-    fn rate_limit_exceeded_display() {
-        let e = RateLimitError::Exceeded { retry_after_secs: 60 };
-        assert!(e.to_string().contains("60"));
-    }
-
-    #[test]
-    fn burst_exceeded_display() {
-        let e = RateLimitError::BurstExceeded { retry_after_secs: 1 };
-        assert!(e.to_string().contains("burst"));
-    }
-
-    // ── ValidationError ──────────────────────────────────────────────────────
-
-    #[test]
-    fn empty_input_status_and_code() {
-        let e = ValidationError::EmptyInput { field: "api_key" };
+    fn session_validation_status_and_code() {
+        let e = SecurityError::SessionValidation(SessionValidationError::EmptyUserId);
         assert_eq!(e.status_code(), 400);
-        assert_eq!(e.code(), "ERR_SEC_010");
-        assert!(e.to_string().contains("api_key"));
+        assert_eq!(e.code(), "ERR_SECURITY_002");
+        assert!(e.to_string().contains("Session validation failed"));
     }
 
     #[test]
-    fn input_too_long_status_and_code() {
-        let e = ValidationError::InputTooLong { field: "token", max_len: 256 };
+    fn session_validation_from_impl() {
+        let inner = SessionValidationError::InvalidTtl;
+        let e: SecurityError = inner.into();
         assert_eq!(e.status_code(), 400);
-        assert_eq!(e.code(), "ERR_SEC_011");
-        assert!(e.to_string().contains("256"));
     }
 
     #[test]
-    fn invalid_characters_does_not_leak_input() {
-        let e = ValidationError::InvalidCharacters { field: "user_id" };
-        // The raw input must not appear in the error message.
-        let msg = e.to_string();
-        assert!(msg.contains("user_id"));
-        assert!(!msg.contains("DROP TABLE")); // sanity: no injection
-    }
-
-    #[test]
-    fn invalid_format_status_and_code() {
-        let e = ValidationError::InvalidFormat { field: "tenant_id", reason: "expected UUID v4" };
-        assert_eq!(e.status_code(), 400);
-        assert_eq!(e.code(), "ERR_SEC_013");
-        assert!(e.to_string().contains("UUID v4"));
-    }
-
-    // ── SecurityError ────────────────────────────────────────────────────────
-
-    #[test]
-    fn security_error_from_rate_limit() {
-        let e: SecurityError = RateLimitError::Exceeded { retry_after_secs: 10 }.into();
-        assert_eq!(e.status_code(), 429);
-        assert_eq!(e.code(), "ERR_SEC_001");
-    }
-
-    #[test]
-    fn security_error_from_validation() {
-        let e: SecurityError = ValidationError::EmptyInput { field: "secret" }.into();
-        assert_eq!(e.status_code(), 400);
-        assert_eq!(e.code(), "ERR_SEC_010");
-        assert_eq!(e.retry_after_secs(), None);
-        assert!(e.is_client_error());
-    }
-
-    #[test]
-    fn security_error_retry_after_for_rate_limits() {
-        let e: SecurityError = RateLimitError::Exceeded { retry_after_secs: 15 }.into();
-        assert_eq!(e.retry_after_secs(), Some(15));
-        assert!(e.is_client_error());
-    }
-
-    #[test]
-    fn security_error_display_is_transparent() {
-        let inner = RateLimitError::BurstExceeded { retry_after_secs: 2 };
-        let outer: SecurityError = inner.into();
-        assert!(outer.to_string().contains("burst"));
+    fn session_validation_display_includes_inner() {
+        let e = SecurityError::SessionValidation(SessionValidationError::Expired);
+        assert!(e.to_string().contains("expired") || e.to_string().contains("Session validation failed"));
     }
 }

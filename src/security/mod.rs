@@ -1,6 +1,6 @@
-/// Security module — rate limiting, session validation, and error handling.
+/// Security module — rate limiting and session validation.
 pub mod error;
 pub mod session;
 
-pub use error::*;
+pub use error::SecurityError;
 pub use session::*;

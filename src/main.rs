@@ -127,7 +127,7 @@ async fn serve(config: config::Config) -> anyhow::Result<()> {
 
     // Initialize pool manager for multi-region failover
     let pool_manager =
-        PoolManager::new(&config.database_url, config.database_replica_url.as_deref()).await?;
+        PoolManager::new(&config.database_url, config.database_replica_url.as_deref(), config.db_max_connections).await?;
 
     if pool_manager.replica().is_some() {
         tracing::info!("Database replica configured - read queries will be routed to replica");
@@ -257,7 +257,7 @@ async fn serve(config: config::Config) -> anyhow::Result<()> {
     tracing::info!("Redis idempotency service initialized");
 
     // Initialize query cache
-    let query_cache = synapse_core::services::QueryCache::new(&config.redis_url)?;
+    let query_cache = synapse_core::services::QueryCache::new(&config.redis_url).await?;
     tracing::info!("Query cache initialized");
 
     // Warm cache on startup

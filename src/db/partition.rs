@@ -140,7 +140,7 @@ mod tests {
             std::env::var("REDIS_URL").unwrap_or_else(|_| "redis://127.0.0.1:6379".to_string());
 
         let pool = PgPool::connect(&database_url).await.unwrap();
-        let cache = QueryCache::new(&redis_url).expect("redis must be available");
+        let cache = QueryCache::new(&redis_url).await.expect("redis must be available");
 
         // Pre-clear any existing warm keys so we can detect a fresh write.
         cache.invalidate("query:status_counts").await.ok();
