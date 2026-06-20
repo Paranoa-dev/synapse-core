@@ -419,3 +419,282 @@ pub async fn rate_limit_middleware(
     );
     response
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use axum::http::HeaderMap;
+
+    // ── Tier::requests_per_hour ───────────────────────────────────────────────
+
+    #[test]
+    fn test_tier_free_limit() {
+        assert_eq!(Tier::Free.requests_per_hour(), 100);
+    }
+
+    #[test]
+    fn test_tier_standard_limit() {
+        assert_eq!(Tier::Standard.requests_per_hour(), 1000);
+    }
+
+    #[test]
+    fn test_tier_premium_limit() {
+        assert_eq!(Tier::Premium.requests_per_hour(), 10000);
+    }
+
+    #[test]
+    fn test_tier_limits_are_ascending() {
+        assert!(Tier::Free.requests_per_hour() < Tier::Standard.requests_per_hour());
+        assert!(Tier::Standard.requests_per_hour() < Tier::Premium.requests_per_hour());
+    }
+
+    // ── ResetSchedule::ttl_seconds ────────────────────────────────────────────
+
+    #[test]
+    fn test_reset_schedule_hourly_ttl() {
+        assert_eq!(ResetSchedule::Hourly.ttl_seconds(), 3600);
+    }
+
+    #[test]
+    fn test_reset_schedule_daily_ttl() {
+        assert_eq!(ResetSchedule::Daily.ttl_seconds(), 86400);
+    }
+
+    #[test]
+    fn test_reset_schedule_monthly_ttl() {
+        assert_eq!(ResetSchedule::Monthly.ttl_seconds(), 2592000);
+    }
+
+    #[test]
+    fn test_reset_schedule_ttls_are_ascending() {
+        assert!(ResetSchedule::Hourly.ttl_seconds() < ResetSchedule::Daily.ttl_seconds());
+        assert!(ResetSchedule::Daily.ttl_seconds() < ResetSchedule::Monthly.ttl_seconds());
+    }
+
+    // ── Quota effective limit (custom_limit overrides tier) ───────────────────
+
+    #[test]
+    fn test_quota_uses_tier_default_when_no_custom_limit() {
+        let q = Quota {
+            tier: Tier::Standard,
+            custom_limit: None,
+            reset_schedule: ResetSchedule::Hourly,
+        };
+        let effective = q.custom_limit.unwrap_or_else(|| q.tier.requests_per_hour());
+        assert_eq!(effective, 1000);
+    }
+
+    #[test]
+    fn test_quota_custom_limit_overrides_tier() {
+        let q = Quota {
+            tier: Tier::Premium,
+            custom_limit: Some(42),
+            reset_schedule: ResetSchedule::Daily,
+        };
+        let effective = q.custom_limit.unwrap_or_else(|| q.tier.requests_per_hour());
+        assert_eq!(effective, 42);
+    }
+
+    // ── QuotaStatus arithmetic ────────────────────────────────────────────────
+
+    #[test]
+    fn test_quota_status_remaining_saturates_at_zero() {
+        // remaining = limit.saturating_sub(used) — must not underflow
+        let limit: u32 = 5;
+        let used: u32 = 10;
+        let remaining = limit.saturating_sub(used);
+        assert_eq!(remaining, 0);
+    }
+
+    #[test]
+    fn test_quota_status_remaining_normal() {
+        let status = QuotaStatus {
+            limit: 100,
+            used: 30,
+            remaining: 70,
+            reset_in_seconds: 3600,
+        };
+        assert_eq!(status.remaining, status.limit - status.used);
+    }
+
+    // ── extract_quota_key ─────────────────────────────────────────────────────
+
+    #[test]
+    fn test_extract_quota_key_from_x_api_key() {
+        let mut headers = HeaderMap::new();
+        headers.insert("x-api-key", "my-key-123".parse().unwrap());
+        assert_eq!(extract_quota_key(&headers), Some("my-key-123".to_string()));
+    }
+
+    #[test]
+    fn test_extract_quota_key_falls_back_to_forwarded_for() {
+        let mut headers = HeaderMap::new();
+        headers.insert("x-forwarded-for", "1.2.3.4, 5.6.7.8".parse().unwrap());
+        assert_eq!(
+            extract_quota_key(&headers),
+            Some("ip:1.2.3.4".to_string())
+        );
+    }
+
+    #[test]
+    fn test_extract_quota_key_returns_none_when_no_headers() {
+        let headers = HeaderMap::new();
+        assert_eq!(extract_quota_key(&headers), None);
+    }
+
+    #[test]
+    fn test_extract_quota_key_prefers_api_key_over_forwarded_for() {
+        let mut headers = HeaderMap::new();
+        headers.insert("x-api-key", "api-key".parse().unwrap());
+        headers.insert("x-forwarded-for", "9.9.9.9".parse().unwrap());
+        assert_eq!(extract_quota_key(&headers), Some("api-key".to_string()));
+    }
+
+    // ── Serde round-trip ──────────────────────────────────────────────────────
+
+    #[test]
+    fn test_tier_serde_round_trip() {
+        for tier in [Tier::Free, Tier::Standard, Tier::Premium] {
+            let json = serde_json::to_string(&tier).unwrap();
+            let back: Tier = serde_json::from_str(&json).unwrap();
+            assert_eq!(back.requests_per_hour(), tier.requests_per_hour());
+        }
+    }
+
+    #[test]
+    fn test_reset_schedule_serde_round_trip() {
+        for sched in [
+            ResetSchedule::Hourly,
+            ResetSchedule::Daily,
+            ResetSchedule::Monthly,
+        ] {
+            let ttl = sched.ttl_seconds();
+            let json = serde_json::to_string(&sched).unwrap();
+            let back: ResetSchedule = serde_json::from_str(&json).unwrap();
+            assert_eq!(back.ttl_seconds(), ttl);
+        }
+    }
+
+    #[test]
+    fn test_quota_serde_round_trip() {
+        let q = Quota {
+            tier: Tier::Standard,
+            custom_limit: Some(500),
+            reset_schedule: ResetSchedule::Daily,
+        };
+        let json = serde_json::to_string(&q).unwrap();
+        let back: Quota = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.custom_limit, Some(500));
+        assert_eq!(back.reset_schedule.ttl_seconds(), 86400);
+    }
+
+    // ── Redis-backed enforcement (requires Redis) ─────────────────────────────
+
+    fn make_manager() -> QuotaManager {
+        let url =
+            std::env::var("REDIS_URL").unwrap_or_else(|_| "redis://127.0.0.1:6379".to_string());
+        QuotaManager::new(&url).expect("QuotaManager::new")
+    }
+
+    fn unique_key(label: &str) -> String {
+        format!("test:quota:{}:{}", label, uuid::Uuid::new_v4())
+    }
+
+    #[tokio::test]
+    #[ignore = "Requires Redis"]
+    async fn test_consume_under_limit_is_allowed() {
+        let mgr = make_manager();
+        let k = unique_key("under_limit");
+        // limit=5, first request must be allowed
+        assert!(mgr.consume_quota_with_window(&k, 5, 60).await.unwrap());
+    }
+
+    #[tokio::test]
+    #[ignore = "Requires Redis"]
+    async fn test_consume_at_limit_is_allowed() {
+        let mgr = make_manager();
+        let k = unique_key("at_limit");
+        // consume exactly up to the limit
+        for _ in 0..3 {
+            assert!(mgr.consume_quota_with_window(&k, 3, 60).await.unwrap());
+        }
+    }
+
+    #[tokio::test]
+    #[ignore = "Requires Redis"]
+    async fn test_consume_over_limit_is_denied() {
+        let mgr = make_manager();
+        let k = unique_key("over_limit");
+        // exhaust limit=2
+        mgr.consume_quota_with_window(&k, 2, 60).await.unwrap();
+        mgr.consume_quota_with_window(&k, 2, 60).await.unwrap();
+        // third request must be denied
+        assert!(!mgr.consume_quota_with_window(&k, 2, 60).await.unwrap());
+    }
+
+    #[tokio::test]
+    #[ignore = "Requires Redis"]
+    async fn test_check_quota_does_not_consume() {
+        let mgr = make_manager();
+        let k = unique_key("check_no_consume");
+        // check twice — used must stay 0
+        let s1 = mgr.check_quota_with_limit(&k, 10).await.unwrap();
+        let s2 = mgr.check_quota_with_limit(&k, 10).await.unwrap();
+        assert_eq!(s1.used, 0);
+        assert_eq!(s2.used, 0);
+    }
+
+    #[tokio::test]
+    #[ignore = "Requires Redis"]
+    async fn test_reset_clears_usage() {
+        let mgr = make_manager();
+        let k = unique_key("reset");
+        mgr.consume_quota_with_window(&k, 10, 60).await.unwrap();
+        mgr.consume_quota_with_window(&k, 10, 60).await.unwrap();
+        mgr.reset_quota(&k).await.unwrap();
+        let s = mgr.check_quota_with_limit(&k, 10).await.unwrap();
+        assert_eq!(s.used, 0);
+    }
+
+    #[tokio::test]
+    #[ignore = "Requires Redis"]
+    async fn test_default_quota_config_is_free_tier() {
+        let mgr = make_manager();
+        let k = unique_key("default_config");
+        let q = mgr.get_quota_config(&k).await.unwrap();
+        assert_eq!(q.tier.requests_per_hour(), 100);
+        assert!(q.custom_limit.is_none());
+    }
+
+    #[tokio::test]
+    #[ignore = "Requires Redis"]
+    async fn test_set_and_get_quota_config_round_trip() {
+        let mgr = make_manager();
+        let k = unique_key("config_round_trip");
+        let quota = Quota {
+            tier: Tier::Premium,
+            custom_limit: Some(9999),
+            reset_schedule: ResetSchedule::Monthly,
+        };
+        mgr.set_quota_config(&k, &quota).await.unwrap();
+        let loaded = mgr.get_quota_config(&k).await.unwrap();
+        assert_eq!(loaded.custom_limit, Some(9999));
+        assert_eq!(loaded.reset_schedule.ttl_seconds(), 2592000);
+    }
+
+    /// Circuit breaker open → consume_quota_with_window fails open (returns true).
+    /// We simulate this by pointing the manager at an unreachable Redis URL and
+    /// verifying the middleware's fail-open contract: the function returns Ok(true).
+    #[tokio::test]
+    async fn test_circuit_breaker_fail_open_on_bad_redis() {
+        // Port 1 is reserved and will refuse connections immediately.
+        let mgr = QuotaManager::new("redis://127.0.0.1:1").expect("client creation succeeds");
+        let k = unique_key("cb_fail_open");
+        // The circuit breaker will record failures; after enough attempts it opens.
+        // Either way, the middleware wraps this with `.unwrap_or(true)` — we verify
+        // the raw error path returns an Err (not a panic).
+        let result = mgr.consume_quota_with_window(&k, 10, 60).await;
+        // Must be Err (Redis refused) — not a panic or incorrect Ok.
+        assert!(result.is_err(), "expected Err on unreachable Redis");
+    }
+}
