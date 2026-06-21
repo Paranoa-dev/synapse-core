@@ -20,6 +20,7 @@ pub use lock_manager::LeaderElection;
 pub use lock_manager::{FairLockConfig, FairLockManager};
 pub use query_cache::{CacheConfig, QueryCache};
 pub use reconciliation::ReconciliationService;
+pub use resource_limits::{ResourceLimiter, TaskLimits};
 pub use scheduler::{AuditLogRetentionJob, Job, JobScheduler, JobStatus};
 pub use settlement::SettlementService;
 pub use transaction_processor::TransactionProcessor;

@@ -1,3 +1,4 @@
+pub mod auth;
 pub mod cache;
 pub mod config;
 pub mod db;
@@ -7,9 +8,11 @@ pub mod handlers;
 pub mod health;
 pub mod metrics;
 pub mod middleware;
+pub mod payments;
 pub mod readiness;
 pub mod schemas;
 pub mod secrets;
+pub mod security;
 pub mod services;
 pub mod startup;
 pub mod stellar;
@@ -88,7 +91,7 @@ impl AppState {
             AssetCache::start(pool.clone(), std::time::Duration::from_secs(300)).await;
         Self {
             db: pool.clone(),
-            pool_manager: crate::db::pool_manager::PoolManager::new(database_url, None)
+            pool_manager: crate::db::pool_manager::PoolManager::new(database_url, None, 10)
                 .await
                 .unwrap(),
             horizon_client: HorizonClient::new("https://horizon-testnet.stellar.org".to_string()),
@@ -97,7 +100,7 @@ impl AppState {
             start_time: std::time::Instant::now(),
             readiness: ReadinessState::new(),
             tx_broadcast: tx,
-            query_cache: QueryCache::new("redis://localhost:6379").unwrap(),
+            query_cache: QueryCache::new("redis://localhost:6379").await.unwrap(),
             profiling_manager: ProfilingManager::new(),
             tenant_configs: Arc::new(tokio::sync::RwLock::new(HashMap::new())),
             secrets_store: None,
@@ -182,8 +185,9 @@ pub fn create_app(app_state: AppState) -> Router {
 
     // Admin routes — quota skipped, SecretsStore injected for rotation-aware auth
     let mut admin_router = Router::new()
-        .route("/health", get(handlers::health))
+        .route("/live", get(handlers::live))
         .route("/ready", get(handlers::ready))
+        .route("/health", get(handlers::health))
         .route("/errors", get(handlers::error_catalog));
 
     if let Some(store) = &app_state.secrets_store {
@@ -257,6 +261,11 @@ pub fn create_app(app_state: AppState) -> Router {
         .merge(
             Router::new()
                 .route("/ws", get(handlers::ws::ws_handler))
+                .route(
+                    "/reconnect/status",
+                    get(handlers::reconnection::reconnect_status),
+                )
+                .route("/reconnect", post(handlers::reconnection::reconnect))
                 .with_state(app_state),
         )
         .layer(axum_middleware::from_fn(

@@ -305,14 +305,13 @@ impl WebhookDispatcher {
         let signature = sign_payload_with_version(&endpoint.secret, &timestamp, &body);
 
         // Get trace_id from transaction if available
-        let trace_id: Option<String> = sqlx::query_scalar(
-            "SELECT trace_id FROM transactions WHERE id = $1"
-        )
-        .bind(delivery.transaction_id)
-        .fetch_optional(&self.pool)
-        .await
-        .ok()
-        .flatten();
+        let trace_id: Option<String> =
+            sqlx::query_scalar("SELECT trace_id FROM transactions WHERE id = $1")
+                .bind(delivery.transaction_id)
+                .fetch_optional(&self.pool)
+                .await
+                .ok()
+                .flatten();
 
         let mut request = self
             .http
@@ -326,10 +325,7 @@ impl WebhookDispatcher {
             request = request.header("X-Trace-Id", trace_id);
         }
 
-        let response = request
-            .body(body)
-            .send()
-            .await;
+        let response = request.body(body).send().await;
 
         let new_attempt_count = delivery.attempt_count + 1;
         let now = Utc::now();

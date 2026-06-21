@@ -16,7 +16,7 @@
 use sqlx::{migrate::Migrator, PgPool};
 use std::path::Path;
 use synapse_core::{create_app, AppState};
-use testcontainers::{runners::AsyncRunner, ContainerAsync, ImageExt};
+use testcontainers::{runners::AsyncRunner, ImageExt};
 use testcontainers_modules::postgres::Postgres;
 
 /// Test application with automatic database and HTTP server setup.
@@ -59,7 +59,7 @@ impl TestApp {
         let (tx_broadcast, _) = tokio::sync::broadcast::channel(100);
         let app_state = AppState {
             db: pool.clone(),
-            pool_manager: synapse_core::db::pool_manager::PoolManager::new(&database_url, None)
+            pool_manager: synapse_core::db::pool_manager::PoolManager::new(&database_url, None, 5)
                 .await
                 .unwrap(),
             horizon_client: synapse_core::stellar::HorizonClient::new(
@@ -72,7 +72,9 @@ impl TestApp {
             start_time: std::time::Instant::now(),
             readiness: synapse_core::ReadinessState::new(),
             tx_broadcast,
-            query_cache: synapse_core::services::QueryCache::new("redis://localhost:6379").unwrap(),
+            query_cache: synapse_core::services::QueryCache::new("redis://localhost:6379")
+                .await
+                .unwrap(),
             profiling_manager: synapse_core::handlers::profiling::ProfilingManager::new(),
             tenant_configs: std::sync::Arc::new(tokio::sync::RwLock::new(
                 std::collections::HashMap::new(),

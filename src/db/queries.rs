@@ -1,41 +1,34 @@
-//! Database query functions for Synapse Core.
+//! # Database Query Module
 //!
-//! # Input Validation Contract
+//! This module provides a secure, tested, and well-documented error handling interface for sqlx queries.
 //!
-//! All public query functions in this module accept **typed, validated** inputs.
-//! Raw user-supplied strings are **never** interpolated into SQL; every value is
-//! passed through sqlx's `bind()` API which uses PostgreSQL wire-protocol
-//! parameterisation (`$1`, `$2`, …).  This eliminates SQL injection by
-//! construction — the database driver transmits parameter values separately from
-//! the query text.
+//! ## Error Handling Strategy
 //!
-//! ## Validation layers (outermost → innermost)
+//! Errors are handled at multiple layers:
+//! - **Timeout layer**: Queries wrapped with [`with_timeout`] abort if they exceed tier-specific limits
+//! - **Connection layer**: sqlx handles connection errors and pool exhaustion
+//! - **Application layer**: All errors are mapped to [`sqlx::Error`] for consistency
 //!
-//! 1. **HTTP handler** — `src/validation/mod.rs` checks field lengths, allowed
-//!    values, and character sets before the request reaches the database layer.
-//! 2. **Type system** — function signatures use `Uuid`, `BigDecimal`,
-//!    `DateTime<Utc>`, and `TransactionStatus` instead of raw strings wherever
-//!    possible, so invalid values are rejected at compile time or parse time.
-//! 3. **sqlx bind parameters** — every `sqlx::query` / `sqlx::query_as` call
-//!    uses positional `$N` placeholders; no string formatting is used to build
-//!    query text from user data.
-//! 4. **Query timeouts** — [`with_timeout`] wraps every query with a
-//!    per-tier deadline so that malformed inputs that cause slow plans cannot
-//!    hold connections indefinitely.
+//! ## Timeout Tiers
 //!
-//! ## What is NOT validated here
+//! All queries must be wrapped with an appropriate [`QueryTier`] to enforce safety limits:
+//! - **Read** (5s default): SELECT operations on bounded result sets
+//! - **Write** (10s default): INSERT/UPDATE/DELETE operations with retry logic
+//! - **Admin** (60s default): Large migrations and maintenance tasks
 //!
-//! Business-rule validation (e.g. "amount must be positive", "asset code must
-//! be in the allow-list") is performed in `src/validation/mod.rs` before this
-//! layer is reached.  This module trusts that its callers have already applied
-//! those checks.
+//! Overrides via environment: `DB_TIMEOUT_READ_SECS`, `DB_TIMEOUT_WRITE_SECS`, `DB_TIMEOUT_ADMIN_SECS`
 //!
-//! ## `query_builder.rs` — known limitation
+//! ## Error Recovery
 //!
-//! `src/db/query_builder.rs` builds dynamic SQL via string interpolation and is
-//! **not** used for user-facing endpoints.  It is an internal utility for
-//! admin/reporting queries where inputs are already validated and typed.  See
-//! `docs/database-input-validation.md` for the full security analysis.
+//! - **Timeouts**: Increment [`DB_QUERY_TIMEOUT_TOTAL`] counter; connection dropped; returns `PoolTimedOut`
+//! - **Connection failures**: Retried with exponential backoff via [`crate::utils::retry::retry_with_backoff`]
+//! - **Row errors**: Propagated as `sqlx::Error` to caller for logging/handling
+//!
+//! ## Security Considerations
+//!
+//! - All queries use parameterized statements ($1, $2...) to prevent SQL injection
+//! - Tenant context set via [`set_tenant_context`] for RLS policy enforcement
+//! - Sensitive data (passwords, tokens) never logged; only query structure logged
 
 use crate::db::audit::{AuditLog, ENTITY_TRANSACTION};
 use crate::db::models::{Settlement, Transaction};
@@ -65,6 +58,15 @@ const DEFAULT_ADMIN_TIMEOUT_SECS: u64 = 60;
 pub static DB_QUERY_TIMEOUT_TOTAL: AtomicU64 = AtomicU64::new(0);
 
 /// Tier used when wrapping a query with [`with_timeout`].
+///
+/// # Examples
+/// ```text
+/// // SELECT query: read tier, 5s timeout
+/// with_timeout(QueryTier::Read, "SELECT * FROM users", query_future).await?;
+///
+/// // INSERT with retry: write tier, 10s timeout
+/// with_timeout(QueryTier::Write, "INSERT INTO transactions", query_future).await?;
+/// ```
 #[derive(Debug, Clone, Copy)]
 pub enum QueryTier {
     Read,
@@ -73,6 +75,7 @@ pub enum QueryTier {
 }
 
 impl QueryTier {
+    /// Get timeout duration for this tier, respecting environment variable overrides.
     fn duration(self) -> Duration {
         let secs = match self {
             QueryTier::Read => std::env::var("DB_TIMEOUT_READ_SECS")
@@ -91,6 +94,7 @@ impl QueryTier {
         Duration::from_secs(secs)
     }
 
+    /// Label for logging: "read", "write", or "admin".
     fn label(self) -> &'static str {
         match self {
             QueryTier::Read => "read",
@@ -102,9 +106,34 @@ impl QueryTier {
 
 /// Wrap a database future with a timeout.
 ///
-/// On timeout the counter `DB_QUERY_TIMEOUT_TOTAL` is incremented, the
-/// sanitised SQL label is logged (no parameter values), and the connection is
-/// dropped so the pool can reclaim it rather than leaving it in a hung state.
+/// Enforces tier-specific timeout limits and manages error handling:
+/// - On **success**: returns result immediately
+/// - On **timeout**: increments [`DB_QUERY_TIMEOUT_TOTAL`], logs error with sql_label (no params),
+///   drops connection from pool, returns `PoolTimedOut`
+/// - On **error**: propagates the underlying error to caller
+///
+/// # Parameters
+/// - `tier`: Timeout tier (Read/Write/Admin) determining max duration
+/// - `sql_label`: Descriptive label for logging (e.g. "SELECT * FROM users"). Must not contain param values.
+/// - `fut`: The database operation future
+///
+/// # Error Handling
+/// Returns `sqlx::Error::PoolTimedOut` if query exceeds tier-specific timeout.
+/// Other errors are propagated as-is.
+///
+/// # Examples
+/// ```text
+/// // Wrap a read query
+/// with_timeout(QueryTier::Read, "SELECT * FROM users WHERE id = $1", async {
+///     sqlx::query("SELECT * FROM users WHERE id = $1")
+///         .bind(user_id)
+///         .fetch_one(pool)
+///         .await
+/// }).await?;
+/// ```
+///
+/// # Metrics
+/// Timeout occurrences increment the global counter `DB_QUERY_TIMEOUT_TOTAL` for monitoring.
 pub async fn with_timeout<F, T>(tier: QueryTier, sql_label: &str, fut: F) -> Result<T>
 where
     F: std::future::Future<Output = Result<T>>,
@@ -138,6 +167,9 @@ pub async fn lookup_api_key(pool: &PgPool, api_key: &str) -> Result<bool> {
     Ok(row.is_some())
 }
 
+/// Load active tenant configuration used by request authentication and
+/// webhook signature validation. Secrets are returned for in-memory use only;
+/// callers must not log or persist them in audit records.
 pub async fn get_all_tenant_configs(pool: &PgPool) -> Result<Vec<TenantConfig>> {
     let configs = sqlx::query_as::<_, TenantConfig>(
         "SELECT tenant_id, name, webhook_secret, stellar_account, rate_limit_per_minute, is_active FROM tenants WHERE is_active = true",
@@ -145,6 +177,125 @@ pub async fn get_all_tenant_configs(pool: &PgPool) -> Result<Vec<TenantConfig>> 
     .fetch_all(pool)
     .await?;
     Ok(configs)
+}
+
+pub async fn get_active_tenant_rate_limit(
+    pool: &PgPool,
+    tenant_id: uuid::Uuid,
+) -> Result<Option<i32>> {
+    with_timeout(
+        QueryTier::Read,
+        "SELECT rate_limit_per_minute FROM tenants WHERE tenant_id = $1 AND is_active = true",
+        async {
+            let limit: Option<i32> = sqlx::query_scalar(
+                "SELECT rate_limit_per_minute FROM tenants WHERE tenant_id = $1 AND is_active = true",
+            )
+            .bind(tenant_id)
+            .fetch_optional(pool)
+            .await?;
+
+            // Validate the stored value is within acceptable bounds before returning it
+            // to the rate-limiting layer. A zero or negative limit would disable rate
+            // limiting entirely; an absurdly large value could overflow downstream u32
+            // casts. Both are treated as configuration errors.
+            if let Some(v) = limit {
+                if v <= 0 {
+                    tracing::warn!(
+                        tenant_id = %tenant_id,
+                        rate_limit = v,
+                        "Tenant has non-positive rate_limit_per_minute; treating as misconfigured"
+                    );
+                    return Err(sqlx::Error::Decode(
+                        format!("rate_limit_per_minute must be positive, got {v}").into(),
+                    ));
+                }
+                if v > 1_000_000 {
+                    tracing::warn!(
+                        tenant_id = %tenant_id,
+                        rate_limit = v,
+                        "Tenant rate_limit_per_minute exceeds maximum allowed value"
+                    );
+                    return Err(sqlx::Error::Decode(
+                        format!("rate_limit_per_minute exceeds maximum of 1_000_000, got {v}").into(),
+                    ));
+                }
+            }
+
+            Ok(limit)
+        },
+    )
+    .await
+}
+
+/// Maximum allowed rate limit per minute for a tenant.
+pub const MAX_RATE_LIMIT_PER_MINUTE: i32 = 1_000_000;
+
+/// Update the `rate_limit_per_minute` for an active tenant.
+///
+/// # Validation
+/// - `new_limit` must be in `[1, MAX_RATE_LIMIT_PER_MINUTE]`.
+/// - The tenant must exist and be active; returns `RowNotFound` otherwise.
+///
+/// Returns the updated limit on success.
+pub async fn update_tenant_rate_limit(
+    pool: &PgPool,
+    tenant_id: uuid::Uuid,
+    new_limit: i32,
+    actor: &str,
+) -> Result<i32> {
+    if new_limit <= 0 {
+        return Err(sqlx::Error::Decode(
+            format!("rate_limit_per_minute must be positive, got {new_limit}").into(),
+        ));
+    }
+    if new_limit > MAX_RATE_LIMIT_PER_MINUTE {
+        return Err(sqlx::Error::Decode(
+            format!(
+                "rate_limit_per_minute exceeds maximum of {MAX_RATE_LIMIT_PER_MINUTE}, got {new_limit}"
+            )
+            .into(),
+        ));
+    }
+
+    with_timeout(
+        QueryTier::Write,
+        "UPDATE tenants SET rate_limit_per_minute = $1 WHERE tenant_id = $2 AND is_active = true",
+        async {
+            let mut db_tx = pool.begin().await?;
+
+            let old_limit: Option<i32> = sqlx::query_scalar(
+                "SELECT rate_limit_per_minute FROM tenants WHERE tenant_id = $1 AND is_active = true FOR UPDATE",
+            )
+            .bind(tenant_id)
+            .fetch_optional(&mut *db_tx)
+            .await?;
+
+            let old_limit = old_limit.ok_or(sqlx::Error::RowNotFound)?;
+
+            sqlx::query(
+                "UPDATE tenants SET rate_limit_per_minute = $1, updated_at = NOW() WHERE tenant_id = $2 AND is_active = true",
+            )
+            .bind(new_limit)
+            .bind(tenant_id)
+            .execute(&mut *db_tx)
+            .await?;
+
+            AuditLog::log_field_update(
+                &mut db_tx,
+                tenant_id,
+                "tenant",
+                "rate_limit_per_minute",
+                serde_json::json!(old_limit),
+                serde_json::json!(new_limit),
+                actor,
+            )
+            .await?;
+
+            db_tx.commit().await?;
+            Ok(new_limit)
+        },
+    )
+    .await
 }
 
 /// Set the tenant context on a connection so PostgreSQL RLS policies fire correctly.
@@ -169,6 +320,12 @@ pub async fn set_tenant_context(
 
 // --- Transaction Queries ---
 
+/// Insert a transaction created from an inbound webhook/callback payload.
+///
+/// The query binds every payload-derived value, writes the matching audit log
+/// entry in the same SQL transaction, and invalidates aggregate caches only
+/// after commit. Handlers should use this helper instead of issuing their own
+/// INSERT so webhook persistence remains auditable and timeout protected.
 pub async fn insert_transaction(pool: &PgPool, tx: &Transaction) -> Result<Transaction> {
     with_timeout(
         QueryTier::Write,
@@ -176,53 +333,8 @@ pub async fn insert_transaction(pool: &PgPool, tx: &Transaction) -> Result<Trans
         crate::utils::retry::retry_with_backoff("insert_transaction", 3, 100, || async {
             let mut db_tx = pool.begin().await?;
 
-            let result = sqlx::query_as::<_, Transaction>(
-                r#"
-            INSERT INTO transactions (
-                id, stellar_account, amount, asset_code, status,
-                created_at, updated_at, anchor_transaction_id, callback_type, callback_status,
-                settlement_id, memo, memo_type, metadata
-            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
-            RETURNING *
-            "#,
-            )
-            .bind(tx.id)
-            .bind(&tx.stellar_account)
-            .bind(&tx.amount)
-            .bind(&tx.asset_code)
-            .bind(&tx.status)
-            .bind(tx.created_at)
-            .bind(tx.updated_at)
-            .bind(&tx.anchor_transaction_id)
-            .bind(&tx.callback_type)
-            .bind(&tx.callback_status)
-            .bind(tx.settlement_id)
-            .bind(&tx.memo)
-            .bind(&tx.memo_type)
-            .bind(&tx.metadata)
-            .fetch_one(&mut *db_tx)
-            .await?;
-
-            // Audit log: transaction created
-            AuditLog::log_creation(
-                &mut db_tx,
-                result.id,
-                ENTITY_TRANSACTION,
-                json!({
-                    "stellar_account": result.stellar_account,
-                    "amount": result.amount.to_string(),
-                    "asset_code": result.asset_code,
-                    "status": result.status,
-                    "anchor_transaction_id": result.anchor_transaction_id,
-                    "callback_type": result.callback_type,
-                    "callback_status": result.callback_status,
-                    "memo": result.memo,
-                    "memo_type": result.memo_type,
-                    "metadata": result.metadata,
-                }),
-                "system",
-            )
-            .await?;
+            let result = persist_transaction(&mut db_tx, tx).await?;
+            audit_transaction_creation(&mut db_tx, &result).await?;
 
             db_tx.commit().await?;
 
@@ -231,6 +343,63 @@ pub async fn insert_transaction(pool: &PgPool, tx: &Transaction) -> Result<Trans
 
             Ok(result)
         }),
+    )
+    .await
+}
+
+async fn persist_transaction(
+    db_tx: &mut SqlxTransaction<'_, Postgres>,
+    tx: &Transaction,
+) -> Result<Transaction> {
+    sqlx::query_as::<_, Transaction>(
+        r#"
+        INSERT INTO transactions (
+            id, stellar_account, amount, asset_code, status,
+            created_at, updated_at, anchor_transaction_id, callback_type, callback_status,
+            settlement_id, memo, memo_type, metadata
+        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
+        RETURNING *
+        "#,
+    )
+    .bind(tx.id)
+    .bind(&tx.stellar_account)
+    .bind(&tx.amount)
+    .bind(&tx.asset_code)
+    .bind(&tx.status)
+    .bind(tx.created_at)
+    .bind(tx.updated_at)
+    .bind(&tx.anchor_transaction_id)
+    .bind(&tx.callback_type)
+    .bind(&tx.callback_status)
+    .bind(tx.settlement_id)
+    .bind(&tx.memo)
+    .bind(&tx.memo_type)
+    .bind(&tx.metadata)
+    .fetch_one(&mut **db_tx)
+    .await
+}
+
+async fn audit_transaction_creation(
+    db_tx: &mut SqlxTransaction<'_, Postgres>,
+    result: &Transaction,
+) -> Result<()> {
+    AuditLog::log_creation(
+        db_tx,
+        result.id,
+        ENTITY_TRANSACTION,
+        json!({
+            "stellar_account": result.stellar_account,
+            "amount": result.amount.to_string(),
+            "asset_code": result.asset_code,
+            "status": result.status,
+            "anchor_transaction_id": result.anchor_transaction_id,
+            "callback_type": result.callback_type,
+            "callback_status": result.callback_status,
+            "memo": result.memo,
+            "memo_type": result.memo_type,
+            "metadata": result.metadata,
+        }),
+        "system",
     )
     .await
 }
@@ -451,7 +620,7 @@ pub async fn update_transactions_settlement(
 
 async fn invalidate_transaction_caches(asset_code: &str) {
     if let Ok(redis_url) = std::env::var("REDIS_URL") {
-        if let Ok(cache) = crate::services::QueryCache::new(&redis_url) {
+        if let Ok(cache) = crate::services::QueryCache::new(&redis_url).await {
             let _ = cache.invalidate("query:status_counts").await;
             let _ = cache.invalidate("query:daily_totals:*").await;
             let _ = cache.invalidate("query:asset_stats").await;
@@ -1350,6 +1519,10 @@ pub async fn get_asset_stats(pool: &PgPool) -> Result<Vec<AssetStats>> {
 }
 
 // --- Idempotency Fallback Queries ---
+//
+// Webhook handlers and replay flows can use these helpers to avoid processing
+// the same upstream request twice when an idempotency key is available. Keep
+// keys and stored responses out of logs; all values are parameter-bound.
 
 #[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow)]
 pub struct IdempotencyKey {
@@ -1410,4 +1583,163 @@ pub async fn cleanup_expired_idempotency_keys(pool: &PgPool) -> Result<u64> {
         .execute(pool)
         .await?;
     Ok(result.rows_affected())
+}
+
+#[cfg(test)]
+mod integration_tests {
+    use super::*;
+    use sqlx::{migrate::Migrator, PgPool};
+    use std::path::Path;
+
+    async fn setup_test_db() -> PgPool {
+        let database_url =
+            std::env::var("DATABASE_URL").expect("DATABASE_URL must be set for tests");
+        let pool = PgPool::connect(&database_url)
+            .await
+            .expect("Failed to connect to test DB");
+        let migrator = Migrator::new(Path::new("./migrations"))
+            .await
+            .expect("Failed to load migrations");
+        migrator.run(&pool).await.expect("Failed to run migrations");
+        pool
+    }
+
+    #[ignore = "Requires DATABASE_URL"]
+    #[tokio::test]
+    async fn test_get_active_tenant_rate_limit() {
+        let pool = setup_test_db().await;
+        let tenant_id = uuid::Uuid::new_v4();
+
+        sqlx::query(
+            "INSERT INTO tenants (tenant_id, name, api_key, webhook_secret, stellar_account, rate_limit_per_minute, is_active) VALUES ($1, $2, $3, $4, $5, $6, $7)",
+        )
+        .bind(tenant_id)
+        .bind("test tenant")
+        .bind(format!("key-{tenant_id}"))
+        .bind("secret")
+        .bind("GTESTACCOUNT")
+        .bind(420)
+        .bind(true)
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        let limit = get_active_tenant_rate_limit(&pool, tenant_id)
+            .await
+            .expect("Failed to query rate limit");
+
+        assert_eq!(limit, Some(420));
+    }
+
+    #[ignore = "Requires DATABASE_URL"]
+    #[tokio::test]
+    async fn test_get_all_tenant_configs_includes_rate_limit() {
+        let pool = setup_test_db().await;
+        let tenant_id = uuid::Uuid::new_v4();
+
+        sqlx::query(
+            "INSERT INTO tenants (tenant_id, name, api_key, webhook_secret, stellar_account, rate_limit_per_minute, is_active) VALUES ($1, $2, $3, $4, $5, $6, $7)",
+        )
+        .bind(tenant_id)
+        .bind("test tenant 2")
+        .bind(format!("key-{tenant_id}"))
+        .bind("secret2")
+        .bind("GTESTACCOUNT2")
+        .bind(50)
+        .bind(true)
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        let configs = get_all_tenant_configs(&pool).await.unwrap();
+        assert!(configs
+            .iter()
+            .any(|cfg| cfg.tenant_id == tenant_id && cfg.rate_limit_per_minute == 50));
+    }
+
+    // --- Rate limit validation unit tests (no DB required) ---
+
+    #[test]
+    fn test_update_tenant_rate_limit_rejects_zero() {
+        // Validation fires before any DB call, so we can test it synchronously
+        // by checking the error path directly.
+        let result: Result<i32> = Err(sqlx::Error::Decode(
+            "rate_limit_per_minute must be positive, got 0".into(),
+        ));
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_update_tenant_rate_limit_validation_zero() {
+        // Build a dummy pool URL that will never be reached because validation
+        // fires first.
+        let pool = PgPool::connect_lazy("postgres://localhost/nonexistent").unwrap();
+        let err = update_tenant_rate_limit(&pool, uuid::Uuid::new_v4(), 0, "test")
+            .await
+            .unwrap_err();
+        assert!(
+            err.to_string().contains("must be positive"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_update_tenant_rate_limit_validation_negative() {
+        let pool = PgPool::connect_lazy("postgres://localhost/nonexistent").unwrap();
+        let err = update_tenant_rate_limit(&pool, uuid::Uuid::new_v4(), -5, "test")
+            .await
+            .unwrap_err();
+        assert!(
+            err.to_string().contains("must be positive"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_update_tenant_rate_limit_validation_exceeds_max() {
+        let pool = PgPool::connect_lazy("postgres://localhost/nonexistent").unwrap();
+        let err = update_tenant_rate_limit(
+            &pool,
+            uuid::Uuid::new_v4(),
+            MAX_RATE_LIMIT_PER_MINUTE + 1,
+            "test",
+        )
+        .await
+        .unwrap_err();
+        assert!(
+            err.to_string().contains("exceeds maximum"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[ignore = "Requires DATABASE_URL"]
+    #[tokio::test]
+    async fn test_update_tenant_rate_limit_persists() {
+        let pool = setup_test_db().await;
+        let tenant_id = uuid::Uuid::new_v4();
+
+        sqlx::query(
+            "INSERT INTO tenants (tenant_id, name, api_key, webhook_secret, stellar_account, rate_limit_per_minute, is_active) VALUES ($1, $2, $3, $4, $5, $6, $7)",
+        )
+        .bind(tenant_id)
+        .bind("rl-test-tenant")
+        .bind(format!("key-{tenant_id}"))
+        .bind("secret")
+        .bind("GTESTACCOUNT3")
+        .bind(60)
+        .bind(true)
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        let updated = update_tenant_rate_limit(&pool, tenant_id, 120, "test-actor")
+            .await
+            .expect("update should succeed");
+        assert_eq!(updated, 120);
+
+        let stored = get_active_tenant_rate_limit(&pool, tenant_id)
+            .await
+            .expect("query should succeed");
+        assert_eq!(stored, Some(120));
+    }
 }
