@@ -301,22 +301,25 @@ impl AccountMonitor {
     pub async fn start_streaming(&self, account: &str) -> anyhow::Result<()> {
         info!("Starting SSE stream for account {}", account);
 
+        // Load the persisted paging token so the stream resumes without gaps.
+        let initial_cursor = self.get_cursor(account).await?;
+
         let (tx, mut rx) = mpsc::channel(100);
 
         let client = self.horizon_client.clone();
         let account_clone = account.to_string();
+        let cursor_clone = initial_cursor.clone();
 
-        // Spawn stream task
         tokio::spawn(async move {
-            if let Err(e) = client.stream_payments(&account_clone, tx).await {
+            if let Err(e) = client.stream_payments(&account_clone, tx, cursor_clone).await {
                 error!("Stream error for {}: {}", account_clone, e);
             }
         });
 
-        // Process stream events
         while let Some(result) = rx.recv().await {
             match result {
                 Ok(payment) => {
+                    let payment_id = payment.id.clone();
                     let payment_obj = Payment {
                         id: payment.id,
                         from: payment.from,
@@ -327,17 +330,28 @@ impl AccountMonitor {
                         memo_type: payment.memo_type,
                     };
 
-                    if let Err(e) = self.process_payment(&payment_obj).await {
-                        warn!("Failed to process streamed payment: {}", e);
+                    match self.process_payment(&payment_obj).await {
+                        Ok(_) => {
+                            // Persist cursor so a process restart resumes from here.
+                            if let Err(e) = self.save_cursor(account, &payment_id).await {
+                                warn!("Failed to persist stream cursor for {}: {}", account, e);
+                            }
+                        }
+                        Err(e) => {
+                            warn!("Failed to process streamed payment {}: {}", payment_id, e);
+                            if let Err(dlq_err) = self.route_to_dlq(&payment_obj, &e).await {
+                                error!(
+                                    "Failed to route payment {} to DLQ: {}",
+                                    payment_id, dlq_err
+                                );
+                            }
+                        }
                     }
                 }
                 Err(e) => {
                     warn!("Stream error: {}, falling back to polling", e);
-                    // Fall back to polling
-                    return {
-                        self.start().await;
-                        Ok(())
-                    };
+                    self.start().await;
+                    return Ok(());
                 }
             }
         }
@@ -424,7 +438,7 @@ mod tests {
         };
 
         let monitor = AccountMonitor::new(
-            HorizonClient::new("https://horizon-testnet.stellar.org"),
+            HorizonClient::new("https://horizon-testnet.stellar.org".to_string()),
             pool.clone(),
             vec![account.to_string()],
             60,
@@ -471,7 +485,7 @@ mod tests {
         };
 
         let monitor = AccountMonitor::new(
-            HorizonClient::new("https://horizon-testnet.stellar.org"),
+            HorizonClient::new("https://horizon-testnet.stellar.org".to_string()),
             pool.clone(),
             vec![account.to_string()],
             60,
@@ -505,7 +519,7 @@ mod tests {
         };
 
         let monitor = AccountMonitor::new(
-            HorizonClient::new("https://horizon-testnet.stellar.org"),
+            HorizonClient::new("https://horizon-testnet.stellar.org".to_string()),
             pool.clone(),
             vec![account.to_string()],
             60,
@@ -539,7 +553,7 @@ mod tests {
         };
 
         let monitor = AccountMonitor::new(
-            HorizonClient::new("https://horizon-testnet.stellar.org"),
+            HorizonClient::new("https://horizon-testnet.stellar.org".to_string()),
             pool.clone(),
             vec![account.to_string()],
             60,
@@ -573,7 +587,7 @@ mod tests {
         };
 
         let monitor = AccountMonitor::new(
-            HorizonClient::new("https://horizon-testnet.stellar.org"),
+            HorizonClient::new("https://horizon-testnet.stellar.org".to_string()),
             pool.clone(),
             vec![account.to_string()],
             60,
@@ -607,7 +621,7 @@ mod tests {
         };
 
         let monitor = AccountMonitor::new(
-            HorizonClient::new("https://horizon-testnet.stellar.org"),
+            HorizonClient::new("https://horizon-testnet.stellar.org".to_string()),
             pool.clone(),
             vec![account.to_string()],
             60,
@@ -638,7 +652,7 @@ mod tests {
         };
 
         let monitor = AccountMonitor::new(
-            HorizonClient::new("https://horizon-testnet.stellar.org"),
+            HorizonClient::new("https://horizon-testnet.stellar.org".to_string()),
             pool.clone(),
             vec![account.to_string()],
             60,
@@ -678,7 +692,7 @@ mod tests {
         };
 
         let monitor = AccountMonitor::new(
-            HorizonClient::new("https://horizon-testnet.stellar.org"),
+            HorizonClient::new("https://horizon-testnet.stellar.org".to_string()),
             pool.clone(),
             vec![account.to_string()],
             60,
