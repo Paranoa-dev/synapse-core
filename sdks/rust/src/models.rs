@@ -90,3 +90,74 @@ pub struct ListParams {
     /// Exclusive ISO 8601 range end (e.g. `"2024-02-01T00:00:00Z"`).
     pub to_date: Option<String>,
 }
+
+// ---------------------------------------------------------------------------
+// Admin: locks
+// ---------------------------------------------------------------------------
+
+/// A single active distributed lock.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct ActiveLock {
+    /// The resource name this lock protects.
+    pub resource: String,
+    /// Unique opaque token identifying this lock holder.
+    pub token: String,
+    /// Unix timestamp (seconds) when the lock was acquired.
+    pub acquired_at: u64,
+    /// Configured TTL of this lock in seconds.
+    pub ttl_secs: u64,
+    /// Expected maximum hold duration in seconds.
+    pub expected_duration_secs: u64,
+    /// `true` when the lock has been held longer than twice its expected duration.
+    pub overdue: bool,
+}
+
+/// Response from `GET /admin/locks`.
+#[derive(Debug, Clone, Deserialize)]
+pub struct LocksListResponse {
+    /// Currently held locks. Empty (never `null`) when nothing is locked.
+    pub active_locks: Vec<ActiveLock>,
+    /// Total number of active locks.
+    pub total: usize,
+    /// Number of overdue locks.
+    pub overdue: usize,
+}
+
+// ---------------------------------------------------------------------------
+// Admin: settlements
+// ---------------------------------------------------------------------------
+
+/// A settlement record returned by admin settlement endpoints.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct Settlement {
+    pub id: String,
+    pub asset_code: String,
+    /// Decimal string representation of the total amount.
+    pub total_amount: String,
+    pub tx_count: i64,
+    pub period_start: DateTime<Utc>,
+    pub period_end: DateTime<Utc>,
+    pub status: String,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+    pub dispute_reason: Option<String>,
+    pub original_total_amount: Option<String>,
+    pub reviewed_by: Option<String>,
+    pub reviewed_at: Option<DateTime<Utc>>,
+}
+
+/// Request body for `PATCH /admin/settlements/:id/status`.
+#[derive(Debug, Serialize)]
+pub struct UpdateSettlementStatusRequest {
+    /// New status (e.g. `"disputed"`, `"adjusted"`, `"voided"`).
+    pub status: String,
+    /// Optional human-readable reason for the transition.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+    /// New total amount, required when transitioning to `"adjusted"`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub new_total: Option<String>,
+    /// Actor performing the change (defaults to `"admin"` server-side).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub actor: Option<String>,
+}
