@@ -24,6 +24,13 @@ pub struct SynapseClientBuilder {
 }
 
 impl SynapseClient {
+    /// Construct a client with default retry settings.
+    ///
+    /// This is a convenience wrapper around [`SynapseClient::builder`].
+    pub fn new(base_url: impl Into<String>, api_key: impl Into<String>) -> Self {
+        Self::builder(base_url, api_key).build()
+    }
+
     /// Return a builder for constructing a [`SynapseClient`].
     pub fn builder(
         base_url: impl Into<String>,
