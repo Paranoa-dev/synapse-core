@@ -1,5 +1,6 @@
 use crate::error::SynapseError;
 use crate::retry::{retry_with_backoff, DEFAULT_BASE_DELAY_MS, DEFAULT_MAX_ATTEMPTS};
+use crate::resources::settlements::Settlements;
 use serde::de::DeserializeOwned;
 
 /// HTTP client for the Synapse public API.
@@ -24,6 +25,11 @@ pub struct SynapseClientBuilder {
 }
 
 impl SynapseClient {
+    /// Create a new [`SynapseClient`] with default retry settings.
+    pub fn new(base_url: impl Into<String>, api_key: impl Into<String>) -> Self {
+        Self::builder(base_url, api_key).build()
+    }
+
     /// Return a builder for constructing a [`SynapseClient`].
     pub fn builder(
         base_url: impl Into<String>,
@@ -61,10 +67,55 @@ impl SynapseClient {
                     let body = resp.text().await.unwrap_or_default();
                     return Err(SynapseError::Http { status, body });
                 }
-                resp.json::<T>().await.map_err(SynapseError::Network)
+                resp.json::<T>().await.map_err(|e| SynapseError::Decode(e.to_string()))
             }
         })
         .await
+    }
+
+    /// Issue an authenticated GET request with query parameters.
+    ///
+    /// Retry and error semantics are identical to [`SynapseClient::get`].
+    pub async fn get_query<T: DeserializeOwned>(
+        &self,
+        path: &str,
+        query: &[(&str, &str)],
+    ) -> Result<T, SynapseError> {
+        let url = format!("{}{}", self.base_url, path);
+        let key = self.api_key.clone();
+        let http = self.http.clone();
+        retry_with_backoff(self.max_attempts, self.base_delay_ms, || {
+            let url = url.clone();
+            let key = key.clone();
+            let query = query.to_vec();
+            let http = http.clone();
+            async move {
+                let resp = http
+                    .get(&url)
+                    .header("X-API-Key", &key)
+                    .query(&query)
+                    .send()
+                    .await
+                    .map_err(SynapseError::Network)?;
+                let status = resp.status().as_u16();
+                if status >= 400 {
+                    let body = resp.text().await.unwrap_or_default();
+                    return Err(SynapseError::Http { status, body });
+                }
+                resp.json::<T>().await.map_err(|e| SynapseError::Decode(e.to_string()))
+            }
+        })
+        .await
+    }
+
+    /// Access the settlements resource.
+    pub fn settlements(&self) -> Settlements<'_> {
+        Settlements { client: self }
+    }
+
+    /// Access the transactions resource.
+    pub fn transactions(&self) -> crate::resources::transactions::Transactions<'_> {
+        crate::resources::transactions::Transactions { client: self }
     }
 }
 
