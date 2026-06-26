@@ -1,9 +1,4 @@
-use axum::{
-    body::Body,
-    http::Request,
-    middleware::Next,
-    response::Response,
-};
+use axum::{body::Body, http::Request, middleware::Next, response::Response};
 use uuid::Uuid;
 
 /// Middleware that extracts tenant context from the request and stores it in extensions.
@@ -11,10 +6,7 @@ use uuid::Uuid;
 ///
 /// This middleware runs after auth and expects TenantContext to already be extracted
 /// by the router layer (via FromRequestParts).
-pub async fn tenant_context_middleware(
-    req: Request<Body>,
-    next: Next<Body>,
-) -> Response {
+pub async fn tenant_context_middleware(req: Request<Body>, next: Next<Body>) -> Response {
     // TenantContext is extracted by handlers via FromRequestParts, not here.
     // This middleware is a placeholder for future cross-cutting concerns like:
     // - Logging tenant_id with all requests

@@ -495,7 +495,12 @@ impl LockManager {
                 let ft: i64 = conn.incr(&fence_key, 1_i64).await?;
                 lock.fence_token = ft as u64;
 
-                debug!(resource, attempts, fence_token = lock.fence_token, "Acquired distributed lock");
+                debug!(
+                    resource,
+                    attempts,
+                    fence_token = lock.fence_token,
+                    "Acquired distributed lock"
+                );
 
                 crate::metrics::lock_acquired_total().add(
                     1,
@@ -592,7 +597,11 @@ impl LockManager {
         f: F,
     ) -> Result<Option<T>, LockError>
     where
-        F: FnOnce(u64) -> Pin<Box<dyn Future<Output = Result<T, Box<dyn std::error::Error + Send + Sync>>> + Send>>,
+        F: FnOnce(
+            u64,
+        ) -> Pin<
+            Box<dyn Future<Output = Result<T, Box<dyn std::error::Error + Send + Sync>>> + Send>,
+        >,
     {
         let lock = match self.acquire(resource, timeout_duration).await? {
             Some(lock) => lock,

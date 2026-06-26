@@ -12,37 +12,75 @@ pub struct Transition {
 /// Valid transitions for transaction lifecycle (pending → processing → completed/failed, dlq → pending, …).
 pub const TRANSACTION_TRANSITIONS: &[Transition] = &[
     // From pending
-    Transition { from: "pending", to: "processing" },
-    Transition { from: "pending", to: "completed" },
-    Transition { from: "pending", to: "failed" },
+    Transition {
+        from: "pending",
+        to: "processing",
+    },
+    Transition {
+        from: "pending",
+        to: "completed",
+    },
+    Transition {
+        from: "pending",
+        to: "failed",
+    },
     // From processing
-    Transition { from: "processing", to: "completed" },
-    Transition { from: "processing", to: "failed" },
+    Transition {
+        from: "processing",
+        to: "completed",
+    },
+    Transition {
+        from: "processing",
+        to: "failed",
+    },
     // From failed (reprocess)
-    Transition { from: "failed", to: "pending" },
+    Transition {
+        from: "failed",
+        to: "pending",
+    },
     // From dlq (requeue)
-    Transition { from: "dlq", to: "pending" },
+    Transition {
+        from: "dlq",
+        to: "pending",
+    },
 ];
 
 /// Settlement status state machine.
 /// Valid transitions for settlement lifecycle (completed → pending_review → disputed → adjusted → …).
 pub const SETTLEMENT_TRANSITIONS: &[Transition] = &[
-    Transition { from: "completed", to: "pending_review" },
-    Transition { from: "pending_review", to: "disputed" },
-    Transition { from: "pending_review", to: "voided" },
-    Transition { from: "pending_review", to: "completed" },
-    Transition { from: "disputed", to: "adjusted" },
-    Transition { from: "disputed", to: "voided" },
-    Transition { from: "adjusted", to: "completed" },
+    Transition {
+        from: "completed",
+        to: "pending_review",
+    },
+    Transition {
+        from: "pending_review",
+        to: "disputed",
+    },
+    Transition {
+        from: "pending_review",
+        to: "voided",
+    },
+    Transition {
+        from: "pending_review",
+        to: "completed",
+    },
+    Transition {
+        from: "disputed",
+        to: "adjusted",
+    },
+    Transition {
+        from: "disputed",
+        to: "voided",
+    },
+    Transition {
+        from: "adjusted",
+        to: "completed",
+    },
 ];
 
 /// Validates a transition within a given set of allowed transitions.
 /// Allows same-state transitions (idempotent).
-pub fn is_valid_transition(
-    from: &str,
-    to: &str,
-    allowed: &[Transition],
-) -> bool {
+pub fn is_valid_transition(from: &str, to: &str, allowed: &[Transition]) -> bool {
     if from == to {
         return true;
     }
@@ -57,7 +95,11 @@ mod tests {
     #[test]
     fn test_transaction_transitions_coverage() {
         let transitions: HashSet<_> = TRANSACTION_TRANSITIONS.iter().cloned().collect();
-        assert_eq!(transitions.len(), TRANSACTION_TRANSITIONS.len(), "no duplicate transitions");
+        assert_eq!(
+            transitions.len(),
+            TRANSACTION_TRANSITIONS.len(),
+            "no duplicate transitions"
+        );
 
         // Verify expected pairs exist
         assert!(transitions.contains(&Transition {
@@ -77,7 +119,11 @@ mod tests {
     #[test]
     fn test_settlement_transitions_coverage() {
         let transitions: HashSet<_> = SETTLEMENT_TRANSITIONS.iter().cloned().collect();
-        assert_eq!(transitions.len(), SETTLEMENT_TRANSITIONS.len(), "no duplicate transitions");
+        assert_eq!(
+            transitions.len(),
+            SETTLEMENT_TRANSITIONS.len(),
+            "no duplicate transitions"
+        );
 
         assert!(transitions.contains(&Transition {
             from: "completed",
@@ -91,8 +137,16 @@ mod tests {
 
     #[test]
     fn test_same_state_always_valid() {
-        assert!(is_valid_transition("pending", "pending", TRANSACTION_TRANSITIONS));
-        assert!(is_valid_transition("completed", "completed", SETTLEMENT_TRANSITIONS));
+        assert!(is_valid_transition(
+            "pending",
+            "pending",
+            TRANSACTION_TRANSITIONS
+        ));
+        assert!(is_valid_transition(
+            "completed",
+            "completed",
+            SETTLEMENT_TRANSITIONS
+        ));
         assert!(is_valid_transition(
             "arbitrary_state",
             "arbitrary_state",

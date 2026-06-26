@@ -256,9 +256,13 @@ mod tests {
     fn test_message_fallback_only_used_without_code() {
         // The message fallback is last-resort: it should still recognize the
         // documented phrases when no SQLSTATE code is available.
-        assert!(is_transient_by_message("FATAL: could not connect to server"));
+        assert!(is_transient_by_message(
+            "FATAL: could not connect to server"
+        ));
         assert!(is_transient_by_message("ERROR: deadlock detected"));
-        assert!(!is_transient_by_message("ERROR: unique constraint violated"));
+        assert!(!is_transient_by_message(
+            "ERROR: unique constraint violated"
+        ));
     }
 
     #[test]

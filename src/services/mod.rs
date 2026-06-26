@@ -1,6 +1,6 @@
 pub mod account_monitor;
-pub mod circuit_breaker;
 pub mod backup;
+pub mod circuit_breaker;
 pub mod compliance;
 pub mod feature_flags;
 pub mod lock_manager;

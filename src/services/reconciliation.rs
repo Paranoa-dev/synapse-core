@@ -255,10 +255,7 @@ impl ReconciliationService {
         }
 
         let base = self.horizon_client.base_url.trim_end_matches('/');
-        let mut url = format!(
-            "{}/accounts/{}/payments?order=asc&limit=200",
-            base, account
-        );
+        let mut url = format!("{}/accounts/{}/payments?order=asc&limit=200", base, account);
         let mut all_payments = Vec::new();
 
         loop {
@@ -277,10 +274,8 @@ impl ReconciliationService {
 
             let mut past_window = false;
             for r in records {
-                let created: Option<DateTime<Utc>> = r
-                    .created_at
-                    .as_deref()
-                    .and_then(|s| s.parse().ok());
+                let created: Option<DateTime<Utc>> =
+                    r.created_at.as_deref().and_then(|s| s.parse().ok());
 
                 if let Some(ts) = created {
                     if ts > end {
@@ -345,7 +340,14 @@ fn perform_matching(
     // Process groups that have DB rows with a memo.
     for (memo, db_indices) in &db_by_memo {
         let chain_indices = chain_by_memo.get(memo).map(Vec::as_slice).unwrap_or(&[]);
-        match_memo_group(memo, db_indices, chain_indices, db_txs, chain_payments, &mut acc);
+        match_memo_group(
+            memo,
+            db_indices,
+            chain_indices,
+            db_txs,
+            chain_payments,
+            &mut acc,
+        );
     }
 
     // Process chain-only memo groups (no corresponding DB rows).
@@ -356,7 +358,13 @@ fn perform_matching(
     }
 
     // Match memo-less records by account + amount + asset_code.
-    match_no_memo_records(&db_no_memo, &chain_no_memo, db_txs, chain_payments, &mut acc);
+    match_no_memo_records(
+        &db_no_memo,
+        &chain_no_memo,
+        db_txs,
+        chain_payments,
+        &mut acc,
+    );
 
     ReconciliationReport {
         generated_at: Utc::now(),
@@ -527,9 +535,7 @@ fn match_no_memo_records(
                 continue;
             }
             let p = &chain_payments[chain_idx];
-            if p.to == tx.stellar_account
-                && p.amount == tx.amount
-                && p.asset_code == tx.asset_code
+            if p.to == tx.stellar_account && p.amount == tx.amount && p.asset_code == tx.asset_code
             {
                 avail_chain[ci] = false;
                 acc.matched_count += 1;
@@ -926,7 +932,13 @@ mod tests {
     fn test_matching_exact_single_pair() {
         let (start, end) = make_period();
         let db = vec![make_db_tx(1, "GACC", "100.00", "USDC", Some("memo-1"))];
-        let chain = vec![make_chain_payment("cp-1", "GACC", "100.00", "USDC", Some("memo-1"))];
+        let chain = vec![make_chain_payment(
+            "cp-1",
+            "GACC",
+            "100.00",
+            "USDC",
+            Some("memo-1"),
+        )];
         let report = perform_matching(&db, &chain, start, end);
 
         assert_eq!(report.matched_count, 1);
@@ -968,7 +980,11 @@ mod tests {
             make_db_tx(2, "GACC", "50.00", "USDC", Some("dup-memo")),
         ];
         let chain = vec![make_chain_payment(
-            "cp-1", "GACC", "50.00", "USDC", Some("dup-memo"),
+            "cp-1",
+            "GACC",
+            "50.00",
+            "USDC",
+            Some("dup-memo"),
         )];
         let report = perform_matching(&db, &chain, start, end);
 
@@ -1009,7 +1025,11 @@ mod tests {
         let (start, end) = make_period();
         let db = vec![make_db_tx(1, "GACC", "100.00", "USDC", Some("memo-m"))];
         let chain = vec![make_chain_payment(
-            "cp-1", "GACC", "99.00", "USDC", Some("memo-m"),
+            "cp-1",
+            "GACC",
+            "99.00",
+            "USDC",
+            Some("memo-m"),
         )];
         let report = perform_matching(&db, &chain, start, end);
 
@@ -1672,7 +1692,11 @@ mod tests {
         let report = svc.reconcile(account, start, end).await.unwrap();
 
         assert_eq!(report.matched_count, 1);
-        assert_eq!(report.missing_on_chain.len(), 1, "second dup DB row must be reported missing");
+        assert_eq!(
+            report.missing_on_chain.len(),
+            1,
+            "second dup DB row must be reported missing"
+        );
         assert!(report.amount_mismatches.is_empty());
         assert_eq!(report.total_db_transactions, 2);
         check_conservation(&report);
@@ -1708,10 +1732,7 @@ mod property_tests {
 
     /// Generate an asset code so we can test inter-asset ambiguity.
     fn arb_asset() -> impl Strategy<Value = String> {
-        prop_oneof![
-            Just("USDC".to_string()),
-            Just("XLM".to_string()),
-        ]
+        prop_oneof![Just("USDC".to_string()), Just("XLM".to_string()),]
     }
 
     /// Generate an amount from a small set to drive both exact and mismatch paths.

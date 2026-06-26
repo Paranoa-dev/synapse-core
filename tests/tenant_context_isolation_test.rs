@@ -5,7 +5,6 @@
 /// - Connection reuse with adversarial tenant switching doesn't leak data
 /// - No-context queries fail closed (return nothing)
 /// - Concurrent requests on same connection don't interfere
-
 use sqlx::{migrate::Migrator, Acquire, PgPool};
 use std::path::Path;
 use synapse_core::db::queries::with_tenant;
@@ -143,7 +142,11 @@ async fn test_set_local_prevents_connection_reuse_leak() {
     })
     .await
     .unwrap();
-    assert_eq!(result_b.len(), 1, "tenant B should see only its 1 transaction");
+    assert_eq!(
+        result_b.len(),
+        1,
+        "tenant B should see only its 1 transaction"
+    );
     assert_eq!(result_b[0].0, tx_b);
 
     // Request 3: Tenant A queries again (connection reused, context reset again)
@@ -156,7 +159,11 @@ async fn test_set_local_prevents_connection_reuse_leak() {
     })
     .await
     .unwrap();
-    assert_eq!(result_a2.len(), 2, "tenant A should still see its 2 transactions");
+    assert_eq!(
+        result_a2.len(),
+        2,
+        "tenant A should still see its 2 transactions"
+    );
     assert!(result_a2.iter().all(|(id,)| id == &tx_a1 || id == &tx_a2));
 
     // Verify B didn't see A's data during request 2
@@ -170,7 +177,11 @@ async fn test_set_local_prevents_connection_reuse_leak() {
     })
     .await
     .unwrap();
-    assert_eq!(b_sees_a.len(), 0, "tenant B should not see tenant A's transactions");
+    assert_eq!(
+        b_sees_a.len(),
+        0,
+        "tenant B should not see tenant A's transactions"
+    );
 }
 
 /// Test: query with no context fails closed (returns nothing)

@@ -1802,7 +1802,11 @@ mod integration_tests {
             sqlx::types::BigDecimal::from(100u32),
             "USD".to_string(),
             Some(anchor_id.clone()),
-            None, None, None, None, None,
+            None,
+            None,
+            None,
+            None,
+            None,
         );
         let (t1, is_new1) = insert_transaction(&pool, &tx1).await.unwrap();
         assert!(is_new1, "first delivery must be new");
@@ -1813,11 +1817,18 @@ mod integration_tests {
             sqlx::types::BigDecimal::from(200u32),
             "EUR".to_string(),
             Some(anchor_id.clone()),
-            None, None, None, None, None,
+            None,
+            None,
+            None,
+            None,
+            None,
         );
         let (t2, is_new2) = insert_transaction(&pool, &tx2).await.unwrap();
         assert!(!is_new2, "duplicate delivery must not be new");
-        assert_eq!(t1.id, t2.id, "both deliveries must return the same transaction id");
+        assert_eq!(
+            t1.id, t2.id,
+            "both deliveries must return the same transaction id"
+        );
 
         let count: i64 = sqlx::query_scalar(
             "SELECT COUNT(*) FROM transactions WHERE anchor_transaction_id = $1",
@@ -1836,18 +1847,35 @@ mod integration_tests {
         let stellar = "G".to_string() + &"A".repeat(55);
 
         let tx1 = crate::db::models::Transaction::new(
-            stellar.clone(), sqlx::types::BigDecimal::from(100u32),
-            "USD".to_string(), None, None, None, None, None, None,
+            stellar.clone(),
+            sqlx::types::BigDecimal::from(100u32),
+            "USD".to_string(),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
         );
         let tx2 = crate::db::models::Transaction::new(
-            stellar.clone(), sqlx::types::BigDecimal::from(100u32),
-            "USD".to_string(), None, None, None, None, None, None,
+            stellar.clone(),
+            sqlx::types::BigDecimal::from(100u32),
+            "USD".to_string(),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
         );
 
         let (_, is_new1) = insert_transaction(&pool, &tx1).await.unwrap();
         let (_, is_new2) = insert_transaction(&pool, &tx2).await.unwrap();
         assert!(is_new1, "first null-key delivery must be new");
-        assert!(is_new2, "second null-key delivery must also be new (different tx)");
+        assert!(
+            is_new2,
+            "second null-key delivery must also be new (different tx)"
+        );
     }
 
     #[ignore = "Requires DATABASE_URL"]
@@ -1858,8 +1886,15 @@ mod integration_tests {
         let stellar = "G".to_string() + &"A".repeat(55);
 
         let tx = crate::db::models::Transaction::new(
-            stellar.clone(), sqlx::types::BigDecimal::from(50u32),
-            "USD".to_string(), Some(anchor_id.clone()), None, None, None, None, None,
+            stellar.clone(),
+            sqlx::types::BigDecimal::from(50u32),
+            "USD".to_string(),
+            Some(anchor_id.clone()),
+            None,
+            None,
+            None,
+            None,
+            None,
         );
 
         let (t1, is_new1) = insert_transaction(&pool, &tx).await.unwrap();
@@ -1870,13 +1905,11 @@ mod integration_tests {
         assert!(!is_new2, "retry must not create a new row");
         assert_eq!(t1.id, t2.id);
 
-        let count: i64 = sqlx::query_scalar(
-            "SELECT COUNT(*) FROM transactions WHERE id = $1",
-        )
-        .bind(t1.id)
-        .fetch_one(&pool)
-        .await
-        .unwrap();
+        let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM transactions WHERE id = $1")
+            .bind(t1.id)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
         assert_eq!(count, 1, "retry must not produce a duplicate row");
     }
 

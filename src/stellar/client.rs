@@ -552,7 +552,10 @@ mod tests {
         let (tx, mut rx) = mpsc::channel(10);
 
         // First session: no cursor.
-        let url1 = format!("{}/accounts/GTEST/payments?order=asc&stream=true", server.url());
+        let url1 = format!(
+            "{}/accounts/GTEST/payments?order=asc&stream=true",
+            server.url()
+        );
         let (n1, cursor1) = client.connect_stream(&url1, &tx, &metrics).await.unwrap();
         assert_eq!(n1, 1, "first session must deliver p1");
         assert_eq!(cursor1.as_deref(), Some("cursor-1"));
@@ -573,7 +576,11 @@ mod tests {
             received_ids.push(p.id.clone());
         }
 
-        assert_eq!(received_ids, vec!["cursor-1", "cursor-2"], "no gaps, no duplicates");
+        assert_eq!(
+            received_ids,
+            vec!["cursor-1", "cursor-2"],
+            "no gaps, no duplicates"
+        );
     }
 
     #[tokio::test]

@@ -134,7 +134,10 @@ pub fn create_app(app_state: AppState) -> Router {
     // Callback routes: signature verification + api_key_auth + validation + quota
     let mut callback_routes = Router::new()
         .route("/callback", post(handlers::webhook::callback))
-        .route("/callback/transaction", post(handlers::webhook::transaction_callback))
+        .route(
+            "/callback/transaction",
+            post(handlers::webhook::transaction_callback),
+        )
         .layer(axum_middleware::from_fn_with_state(
             app_state.clone(),
             crate::middleware::quota::rate_limit_middleware,

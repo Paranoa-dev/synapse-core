@@ -90,9 +90,9 @@ pub async fn signature_verification(
     let signed_payload = format!("{}.{}", timestamp, body_hex);
 
     let valid_secrets = secrets_store.valid_webhook_secrets().await;
-    let signature_valid = valid_secrets.iter().any(|secret| {
-        verify_signature(&provided_signature, &signed_payload, secret)
-    });
+    let signature_valid = valid_secrets
+        .iter()
+        .any(|secret| verify_signature(&provided_signature, &signed_payload, secret));
 
     if !signature_valid {
         tracing::warn!(
@@ -109,9 +109,7 @@ pub async fn signature_verification(
 
 /// Read request body into bytes. Works with axum 0.6.
 async fn read_body_bytes(body: Body) -> Result<Bytes, String> {
-    hyper::body::to_bytes(body)
-        .await
-        .map_err(|e| e.to_string())
+    hyper::body::to_bytes(body).await.map_err(|e| e.to_string())
 }
 
 /// Extract timestamp from `X-Webhook-Timestamp` header and parse as u64.
@@ -169,8 +167,8 @@ fn verify_signature(provided_hex: &str, signed_payload: &str, secret: &str) -> b
 
 /// Compute HMAC-SHA256 of the signed payload using the secret.
 fn compute_hmac(signed_payload: &str, secret: &str) -> Result<Bytes, String> {
-    let mut mac = HmacSha256::new_from_slice(secret.as_bytes())
-        .map_err(|_| "invalid HMAC key length")?;
+    let mut mac =
+        HmacSha256::new_from_slice(secret.as_bytes()).map_err(|_| "invalid HMAC key length")?;
     mac.update(signed_payload.as_bytes());
     Ok(Bytes::from(mac.finalize().into_bytes().to_vec()))
 }

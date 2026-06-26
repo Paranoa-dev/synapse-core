@@ -168,10 +168,7 @@ impl CircuitBreaker {
     ///
     /// Returns `Err(CircuitBreakerError::Open)` when the breaker is open or
     /// when another instance already holds the HalfOpen probe lease.
-    pub async fn call<F, Fut, T>(
-        &self,
-        f: F,
-    ) -> Result<T, Box<dyn std::error::Error + Send + Sync>>
+    pub async fn call<F, Fut, T>(&self, f: F) -> Result<T, Box<dyn std::error::Error + Send + Sync>>
     where
         F: FnOnce() -> Fut,
         Fut: std::future::Future<Output = Result<T, Box<dyn std::error::Error + Send + Sync>>>,
@@ -534,8 +531,7 @@ mod tests {
         {
             let mut cache = cb.cache.lock().await;
             cache.persisted.state = "open".to_string();
-            cache.persisted.opened_at =
-                Some(Utc::now() - chrono::Duration::seconds(7200));
+            cache.persisted.opened_at = Some(Utc::now() - chrono::Duration::seconds(7200));
             cache.persisted.failure_count = 1;
             cache.needs_refresh = false;
             cache.refreshed_at = Instant::now();
@@ -626,13 +622,12 @@ mod tests {
 
             // Instance A trips the breaker.
             let _ = cb_a.call(|| async { Err::<(), _>("boom".into()) }).await;
-            assert!(matches!(
-                cb_a.get_state().await.state,
-                CircuitState::Open
-            ));
+            assert!(matches!(cb_a.get_state().await.state, CircuitState::Open));
 
             // Instance B reads from Redis and sees Open.
-            let result = cb_b.call(|| async { Ok::<(), Box<dyn std::error::Error + Send + Sync>>(()) }).await;
+            let result = cb_b
+                .call(|| async { Ok::<(), Box<dyn std::error::Error + Send + Sync>>(()) })
+                .await;
             assert!(result.is_err());
             assert_eq!(result.unwrap_err().to_string(), "Circuit breaker is open");
         }
@@ -650,9 +645,7 @@ mod tests {
             let cb = Arc::new(make_cb_redis("svc-probe", &url, 1, 0));
 
             // Trip the breaker.
-            let _ = cb
-                .call(|| async { Err::<(), _>("boom".into()) })
-                .await;
+            let _ = cb.call(|| async { Err::<(), _>("boom".into()) }).await;
 
             let probe_count = Arc::new(AtomicU32::new(0));
 
@@ -696,9 +689,9 @@ mod tests {
             let cb = CircuitBreaker::with_config(
                 "svc-consec".to_string(),
                 client,
-                1,                           // trip after 1 failure
+                1,                            // trip after 1 failure
                 chrono::Duration::seconds(0), // reset immediately
-                2,                           // need 2 successes to close
+                2,                            // need 2 successes to close
                 Duration::from_nanos(1),
                 5_000,
             );
@@ -707,7 +700,9 @@ mod tests {
             let _ = cb.call(|| async { Err::<(), _>("boom".into()) }).await;
 
             // First probe success — still open (success_count = 1 < 2).
-            let _ = cb.call(|| async { Ok::<(), Box<dyn std::error::Error + Send + Sync>>(()) }).await;
+            let _ = cb
+                .call(|| async { Ok::<(), Box<dyn std::error::Error + Send + Sync>>(()) })
+                .await;
             // State must still be Open (not yet Closed).
             // (After the first success the lease is released, so a second probe
             //  can be acquired on the next call.)
@@ -718,11 +713,10 @@ mod tests {
             );
 
             // Second probe success — closes the breaker.
-            let _ = cb.call(|| async { Ok::<(), Box<dyn std::error::Error + Send + Sync>>(()) }).await;
-            assert!(matches!(
-                cb.get_state().await.state,
-                CircuitState::Closed
-            ));
+            let _ = cb
+                .call(|| async { Ok::<(), Box<dyn std::error::Error + Send + Sync>>(()) })
+                .await;
+            assert!(matches!(cb.get_state().await.state, CircuitState::Closed));
         }
     }
 }

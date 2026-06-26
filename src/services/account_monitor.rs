@@ -151,14 +151,17 @@ impl AccountMonitor {
     async fn process_payment(&self, payment: &Payment) -> anyhow::Result<()> {
         // Check for duplicate payment ID (idempotency)
         let already_processed = sqlx::query_scalar::<_, bool>(
-            "SELECT EXISTS(SELECT 1 FROM transactions WHERE horizon_payment_id = $1)"
+            "SELECT EXISTS(SELECT 1 FROM transactions WHERE horizon_payment_id = $1)",
         )
         .bind(&payment.id)
         .fetch_one(&self.pool)
         .await?;
 
         if already_processed {
-            info!("Horizon payment {} already processed (idempotent)", payment.id);
+            info!(
+                "Horizon payment {} already processed (idempotent)",
+                payment.id
+            );
             return Ok(());
         }
 
@@ -211,11 +214,8 @@ impl AccountMonitor {
             );
 
             // Validate status transition: pending → completed
-            crate::validation::state_machine::validate_status_transition(
-                "pending",
-                "completed",
-            )
-            .map_err(|e| anyhow::anyhow!("{e}"))?;
+            crate::validation::state_machine::validate_status_transition("pending", "completed")
+                .map_err(|e| anyhow::anyhow!("{e}"))?;
 
             // Update transaction to completed and record horizon_payment_id
             sqlx::query(
@@ -310,7 +310,10 @@ impl AccountMonitor {
         let cursor_clone = initial_cursor.clone();
 
         tokio::spawn(async move {
-            if let Err(e) = client.stream_payments(&account_clone, tx, cursor_clone).await {
+            if let Err(e) = client
+                .stream_payments(&account_clone, tx, cursor_clone)
+                .await
+            {
                 error!("Stream error for {}: {}", account_clone, e);
             }
         });
@@ -359,7 +362,6 @@ impl AccountMonitor {
     }
 }
 
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -381,7 +383,7 @@ mod tests {
         let tx_id = Uuid::new_v4();
         sqlx::query(
             "INSERT INTO transactions (id, stellar_account, amount, asset_code, status, memo) 
-             VALUES ($1, $2, $3, $4, 'pending', $5)"
+             VALUES ($1, $2, $3, $4, 'pending', $5)",
         )
         .bind(tx_id)
         .bind(account)
@@ -413,11 +415,13 @@ mod tests {
     }
 
     async fn get_dlq_count(pool: &PgPool, tx_id: Uuid) -> i64 {
-        sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM transaction_dlq WHERE transaction_id = $1")
-            .bind(tx_id)
-            .fetch_one(pool)
-            .await
-            .expect("fetch failed")
+        sqlx::query_scalar::<_, i64>(
+            "SELECT COUNT(*) FROM transaction_dlq WHERE transaction_id = $1",
+        )
+        .bind(tx_id)
+        .fetch_one(pool)
+        .await
+        .expect("fetch failed")
     }
 
     #[tokio::test]
@@ -493,7 +497,11 @@ mod tests {
 
         let result = monitor.process_payment(&payment).await;
         assert!(
-            result.is_err() && result.unwrap_err().to_string().contains("less than expected"),
+            result.is_err()
+                && result
+                    .unwrap_err()
+                    .to_string()
+                    .contains("less than expected"),
             "Should reject underpayment"
         );
 

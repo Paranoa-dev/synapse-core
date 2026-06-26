@@ -38,9 +38,10 @@ impl<'a> Transactions<'a> {
     pub async fn get(&self, id: &str) -> Result<Transaction, SynapseError> {
         let path = format!("/transactions/{}", id);
         match self.client.get::<Transaction>(&path).await {
-            Err(SynapseError::Api { status: 404, message }) => {
-                Err(SynapseError::NotFound(message))
-            }
+            Err(SynapseError::Api {
+                status: 404,
+                message,
+            }) => Err(SynapseError::NotFound(message)),
             other => other,
         }
     }
@@ -78,10 +79,15 @@ impl<'a> Transactions<'a> {
             query.push(("to_date", v.as_str()));
         }
 
-        match self.client.get_query::<TransactionList>("/transactions", &query).await {
-            Err(SynapseError::Api { status: 400, message }) if message.contains("cursor") => {
-                Err(SynapseError::InvalidCursor(message))
-            }
+        match self
+            .client
+            .get_query::<TransactionList>("/transactions", &query)
+            .await
+        {
+            Err(SynapseError::Api {
+                status: 400,
+                message,
+            }) if message.contains("cursor") => Err(SynapseError::InvalidCursor(message)),
             other => other,
         }
     }
