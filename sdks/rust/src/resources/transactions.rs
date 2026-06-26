@@ -15,7 +15,6 @@ impl<'a> Transactions<'a> {
     ///
     /// # Errors
     /// - [`SynapseError::NotFound`] – no transaction with this ID exists (HTTP 404).
-    /// - [`SynapseError::Api`] – server returned another non-success status.
     /// - [`SynapseError::Http`] – network error.
     /// - [`SynapseError::Decode`] – response body is not valid JSON.
     ///
@@ -38,10 +37,10 @@ impl<'a> Transactions<'a> {
     pub async fn get(&self, id: &str) -> Result<Transaction, SynapseError> {
         let path = format!("/transactions/{}", id);
         match self.client.get::<Transaction>(&path).await {
-            Err(SynapseError::Api {
+            Err(SynapseError::Http {
                 status: 404,
-                message,
-            }) => Err(SynapseError::NotFound(message)),
+                body,
+            }) => Err(SynapseError::NotFound(body)),
             other => other,
         }
     }
@@ -59,7 +58,6 @@ impl<'a> Transactions<'a> {
     ///
     /// # Errors
     /// - [`SynapseError::InvalidCursor`] – the cursor is malformed or expired (HTTP 400).
-    /// - [`SynapseError::Api`] – server returned another non-success status.
     /// - [`SynapseError::Http`] – network error.
     /// - [`SynapseError::Decode`] – response body is not valid JSON.
     ///
@@ -130,10 +128,10 @@ impl<'a> Transactions<'a> {
             .get_query::<TransactionList>("/transactions", &query)
             .await
         {
-            Err(SynapseError::Api {
+            Err(SynapseError::Http {
                 status: 400,
-                message,
-            }) if message.contains("cursor") => Err(SynapseError::InvalidCursor(message)),
+                body,
+            }) if body.contains("cursor") => Err(SynapseError::InvalidCursor(body)),
             other => other,
         }
     }
@@ -150,7 +148,6 @@ impl<'a> Transactions<'a> {
     ///
     /// # Errors
     /// - [`SynapseError::InvalidCursor`] – the cursor is malformed or expired (HTTP 400).
-    /// - [`SynapseError::Api`] – server returned another non-success status.
     /// - [`SynapseError::Http`] – network error.
     /// - [`SynapseError::Decode`] – response body is not valid JSON.
     ///
@@ -211,10 +208,10 @@ impl<'a> Transactions<'a> {
             .get_query::<TransactionSearch>("/transactions/search", &query)
             .await
         {
-            Err(SynapseError::Api {
+            Err(SynapseError::Http {
                 status: 400,
-                message,
-            }) if message.contains("cursor") => Err(SynapseError::InvalidCursor(message)),
+                body,
+            }) if body.contains("cursor") => Err(SynapseError::InvalidCursor(body)),
             other => other,
         }
     }

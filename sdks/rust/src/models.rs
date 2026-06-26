@@ -90,3 +90,29 @@ pub struct ListParams {
     /// Exclusive ISO 8601 range end (e.g. `"2024-02-01T00:00:00Z"`).
     pub to_date: Option<String>,
 }
+
+/// A single settlement returned by the API.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct Settlement {
+    pub id: String,
+    pub asset_code: String,
+    pub total_amount: String,
+    pub tx_count: i32,
+    pub period_start: DateTime<Utc>,
+    pub period_end: DateTime<Utc>,
+    pub status: String,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+    pub dispute_reason: Option<String>,
+    pub original_total_amount: Option<String>,
+    pub reviewed_by: Option<String>,
+    pub reviewed_at: Option<DateTime<Utc>>,
+}
+
+/// Paginated list of settlements.
+#[derive(Debug, Clone, Deserialize)]
+pub struct SettlementListResponse {
+    pub settlements: Vec<Settlement>,
+    pub next_cursor: Option<String>,
+    pub has_more: bool,
+}

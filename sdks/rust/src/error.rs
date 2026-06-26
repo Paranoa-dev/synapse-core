@@ -13,6 +13,18 @@ pub enum SynapseError {
     /// A network-level failure occurred before a response was received.
     #[error("network error: {0}")]
     Network(#[from] reqwest::Error),
+
+    /// The requested resource was not found (HTTP 404).
+    #[error("not found: {0}")]
+    NotFound(String),
+
+    /// The cursor parameter is malformed or expired.
+    #[error("invalid cursor: {0}")]
+    InvalidCursor(String),
+
+    /// The response body could not be deserialized.
+    #[error("decode error: {0}")]
+    Decode(String),
 }
 
 impl SynapseError {
@@ -24,6 +36,7 @@ impl SynapseError {
         match self {
             SynapseError::Network(_) => true,
             SynapseError::Http { status, .. } => *status >= 500,
+            _ => false,
         }
     }
 }
