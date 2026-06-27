@@ -7,6 +7,12 @@ pub struct Transactions<'a> {
 }
 
 impl<'a> Transactions<'a> {
+    /// Create a new [`Transactions`] resource.
+    pub fn new(client: &'a SynapseClient) -> Self {
+        Transactions { client }
+    }
+
+
     /// Fetch a single transaction by its UUID.
     ///
     /// Returns [`SynapseError::NotFound`] when the ID does not exist so callers

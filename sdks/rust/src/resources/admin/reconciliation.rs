@@ -1,0 +1,306 @@
+use crate::client::AdminSynapseClient;
+use crate::error::SynapseError;
+use crate::models::{
+    ListReconciliationReports, ListReportsParams, ReconciliationReportDetail,
+    RunReconciliationRequest, RunReconciliationResponse,
+};
+use uuid::Uuid;
+
+/// Admin operations for reconciliation reports.
+pub struct AdminReconciliation<'a> {
+    pub(crate) client: &'a AdminSynapseClient,
+}
+
+impl<'a> AdminReconciliation<'a> {
+    /// List reconciliation reports with optional pagination.
+    ///
+    /// # Errors
+    /// - [`SynapseError::Http`] – server returned an error status.
+    /// - [`SynapseError::Network`] – network error.
+    /// - [`SynapseError::Decode`] – response body is not valid JSON.
+    ///
+    /// # Example
+    ///
+    /// ```no_run
+    /// use synapse_sdk::AdminSynapseClient;
+    /// use synapse_sdk::models::ListReportsParams;
+    ///
+    /// # #[tokio::main]
+    /// # async fn main() {
+    /// let client = AdminSynapseClient::builder("https://api.example.com", "admin-key").build();
+    /// let reconciliation = AdminReconciliation::new(&client);
+    ///
+    /// let params = ListReportsParams {
+    ///     limit: Some(50),
+    ///     offset: Some(0),
+    /// };
+    ///
+    /// match reconciliation.list_reports(params).await {
+    ///     Ok(reports) => println!("Total reports: {}", reports.total),
+    ///     Err(e) => eprintln!("Error: {}", e),
+    /// }
+    /// # }
+    /// ```
+    pub async fn list_reports(
+        &self,
+        params: ListReportsParams,
+    ) -> Result<ListReconciliationReports, SynapseError> {
+        let mut query: Vec<(&str, String)> = Vec::new();
+        let limit_str;
+        let offset_str;
+
+        if let Some(limit) = params.limit {
+            limit_str = limit.to_string();
+            query.push(("limit", limit_str));
+        }
+        if let Some(offset) = params.offset {
+            offset_str = offset.to_string();
+            query.push(("offset", offset_str));
+        }
+
+        let query_refs: Vec<(&str, &str)> = query
+            .iter()
+            .map(|(k, v)| (*k, v.as_str()))
+            .collect();
+
+        self.client
+            .get_query::<ListReconciliationReports>("/admin/reconciliation/reports", &query_refs)
+            .await
+    }
+
+    /// Get a single reconciliation report by ID.
+    ///
+    /// # Errors
+    /// - [`SynapseError::Http`] – server returned an error status (e.g., 404 if not found).
+    /// - [`SynapseError::Network`] – network error.
+    /// - [`SynapseError::Decode`] – response body is not valid JSON.
+    ///
+    /// # Example
+    ///
+    /// ```no_run
+    /// use synapse_sdk::AdminSynapseClient;
+    /// use uuid::Uuid;
+    ///
+    /// # #[tokio::main]
+    /// # async fn main() {
+    /// let client = AdminSynapseClient::builder("https://api.example.com", "admin-key").build();
+    /// let reconciliation = AdminReconciliation::new(&client);
+    ///
+    /// let report_id = Uuid::nil();
+    /// match reconciliation.get_report(report_id).await {
+    ///     Ok(report) => println!("Report generated at: {}", report.generated_at),
+    ///     Err(e) => eprintln!("Error: {}", e),
+    /// }
+    /// # }
+    /// ```
+    pub async fn get_report(
+        &self,
+        id: Uuid,
+    ) -> Result<ReconciliationReportDetail, SynapseError> {
+        let path = format!("/admin/reconciliation/reports/{}", id);
+        self.client.get::<ReconciliationReportDetail>(&path).await
+    }
+
+    /// Run a reconciliation for the specified account.
+    ///
+    /// This method blocks until the reconciliation completes and returns the report summary.
+    /// The `period_hours` parameter controls the lookback window (default: 24 hours).
+    ///
+    /// # Errors
+    /// - [`SynapseError::Http`] – server returned an error status (e.g., 400 if account is invalid).
+    /// - [`SynapseError::Network`] – network error.
+    /// - [`SynapseError::Decode`] – response body is not valid JSON.
+    ///
+    /// # Example
+    ///
+    /// ```no_run
+    /// use synapse_sdk::AdminSynapseClient;
+    ///
+    /// # #[tokio::main]
+    /// # async fn main() {
+    /// let client = AdminSynapseClient::builder("https://api.example.com", "admin-key").build();
+    /// let reconciliation = AdminReconciliation::new(&client);
+    ///
+    /// match reconciliation.run("GABC1234567890123456789012345678901234567890123456789012", None).await {
+    ///     Ok(response) => {
+    ///         println!("Reconciliation completed: {}", response.message);
+    ///         println!("Report ID: {}", response.report.id);
+    ///     }
+    ///     Err(e) => eprintln!("Error: {}", e),
+    /// }
+    /// # }
+    /// ```
+    pub async fn run(
+        &self,
+        account: &str,
+        period_hours: Option<i32>,
+    ) -> Result<RunReconciliationResponse, SynapseError> {
+        let req = RunReconciliationRequest {
+            account: account.to_string(),
+            period_hours,
+        };
+        self.client
+            .post::<_, RunReconciliationResponse>("/admin/reconciliation/run", &req)
+            .await
+    }
+}
+
+impl<'a> AdminReconciliation<'a> {
+    /// Create a new [`AdminReconciliation`] resource.
+    pub fn new(client: &'a AdminSynapseClient) -> Self {
+        AdminReconciliation { client }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use wiremock::matchers::{header, method, path};
+    use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    fn report_summary_json(id: &str) -> serde_json::Value {
+        serde_json::json!({
+            "id": id,
+            "generated_at": "2024-01-15T10:00:00Z",
+            "period_start": "2024-01-14T10:00:00Z",
+            "period_end": "2024-01-15T10:00:00Z",
+            "total_db_transactions": 100,
+            "total_chain_payments": 100,
+            "missing_on_chain_count": 0,
+            "orphaned_payments_count": 0,
+            "amount_mismatches_count": 0,
+            "has_discrepancies": false,
+        })
+    }
+
+    #[tokio::test]
+    async fn list_reports_returns_reports_on_200() {
+        let server = MockServer::start().await;
+        let report_id = "550e8400-e29b-41d4-a716-446655440000";
+
+        Mock::given(method("GET"))
+            .and(path("/admin/reconciliation/reports"))
+            .and(header("X-Admin-Key", "admin-test-key"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "reports": [report_summary_json(report_id)],
+                "total": 1,
+                "limit": 20,
+                "offset": 0,
+            })))
+            .mount(&server)
+            .await;
+
+        let client = AdminSynapseClient::builder(server.uri(), "admin-test-key").build();
+        let reconciliation = AdminReconciliation::new(&client);
+        let result = reconciliation
+            .list_reports(ListReportsParams {
+                limit: None,
+                offset: None,
+            })
+            .await;
+
+        assert!(result.is_ok(), "expected Ok, got: {:?}", result);
+        let page = result.unwrap();
+        assert_eq!(page.total, 1);
+        assert_eq!(page.reports.len(), 1);
+        assert_eq!(page.reports[0].id.to_string(), report_id);
+    }
+
+    #[tokio::test]
+    async fn get_report_returns_report_detail_on_200() {
+        let server = MockServer::start().await;
+        let report_id = "550e8400-e29b-41d4-a716-446655440000";
+
+        Mock::given(method("GET"))
+            .and(path(format!("/admin/reconciliation/reports/{}", report_id)))
+            .and(header("X-Admin-Key", "admin-test-key"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "id": report_id,
+                "generated_at": "2024-01-15T10:00:00Z",
+                "period_start": "2024-01-14T10:00:00Z",
+                "period_end": "2024-01-15T10:00:00Z",
+                "summary": {
+                    "total_db_transactions": 100,
+                    "total_chain_payments": 100,
+                    "missing_on_chain_count": 0,
+                    "orphaned_payments_count": 0,
+                    "amount_mismatches_count": 0,
+                    "has_discrepancies": false,
+                },
+                "missing_on_chain": [],
+                "orphaned_payments": [],
+                "amount_mismatches": [],
+            })))
+            .mount(&server)
+            .await;
+
+        let client = AdminSynapseClient::builder(server.uri(), "admin-test-key").build();
+        let reconciliation = AdminReconciliation::new(&client);
+        let result = reconciliation
+            .get_report(Uuid::parse_str(report_id).unwrap())
+            .await;
+
+        assert!(result.is_ok(), "expected Ok, got: {:?}", result);
+        let report = result.unwrap();
+        assert_eq!(report.id.to_string(), report_id);
+        assert_eq!(report.summary.total_db_transactions, 100);
+        assert!(!report.summary.has_discrepancies);
+    }
+
+    #[tokio::test]
+    async fn run_returns_report_summary_on_200() {
+        let server = MockServer::start().await;
+        let report_id = "550e8400-e29b-41d4-a716-446655440000";
+
+        Mock::given(method("POST"))
+            .and(path("/admin/reconciliation/run"))
+            .and(header("X-Admin-Key", "admin-test-key"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "message": "Reconciliation completed successfully",
+                "report": report_summary_json(report_id),
+            })))
+            .mount(&server)
+            .await;
+
+        let client = AdminSynapseClient::builder(server.uri(), "admin-test-key").build();
+        let reconciliation = AdminReconciliation::new(&client);
+        let result = reconciliation
+            .run("GABC1234567890123456789012345678901234567890123456789012", None)
+            .await;
+
+        assert!(result.is_ok(), "expected Ok, got: {:?}", result);
+        let response = result.unwrap();
+        assert_eq!(
+            response.message,
+            "Reconciliation completed successfully"
+        );
+        assert_eq!(response.report.id.to_string(), report_id);
+    }
+
+    #[tokio::test]
+    async fn run_with_period_hours_sends_parameter() {
+        let server = MockServer::start().await;
+        let report_id = "550e8400-e29b-41d4-a716-446655440000";
+
+        Mock::given(method("POST"))
+            .and(path("/admin/reconciliation/run"))
+            .and(header("X-Admin-Key", "admin-test-key"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "message": "Reconciliation completed successfully",
+                "report": report_summary_json(report_id),
+            })))
+            .mount(&server)
+            .await;
+
+        let client = AdminSynapseClient::builder(server.uri(), "admin-test-key").build();
+        let reconciliation = AdminReconciliation::new(&client);
+        let result = reconciliation
+            .run(
+                "GABC1234567890123456789012345678901234567890123456789012",
+                Some(48),
+            )
+            .await;
+
+        assert!(result.is_ok(), "expected Ok, got: {:?}", result);
+    }
+}

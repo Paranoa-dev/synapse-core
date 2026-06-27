@@ -1,5 +1,6 @@
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
+use uuid::Uuid;
 
 /// A single transaction returned by the API.
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -89,4 +90,112 @@ pub struct ListParams {
     pub from_date: Option<String>,
     /// Exclusive ISO 8601 range end (e.g. `"2024-02-01T00:00:00Z"`).
     pub to_date: Option<String>,
+}
+
+// ============================================================================
+// Admin: Reconciliation Models
+// ============================================================================
+
+/// A reconciliation report summary returned by list or run operations.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct ReconciliationReportSummary {
+    pub id: Uuid,
+    pub generated_at: DateTime<Utc>,
+    pub period_start: DateTime<Utc>,
+    pub period_end: DateTime<Utc>,
+    pub total_db_transactions: i32,
+    pub total_chain_payments: i32,
+    pub missing_on_chain_count: i32,
+    pub orphaned_payments_count: i32,
+    pub amount_mismatches_count: i32,
+    pub has_discrepancies: bool,
+}
+
+/// Paginated list of reconciliation reports.
+#[derive(Debug, Clone, Deserialize)]
+pub struct ListReconciliationReports {
+    pub reports: Vec<ReconciliationReportSummary>,
+    pub total: i64,
+    pub limit: i32,
+    pub offset: i32,
+}
+
+/// Query parameters for listing reconciliation reports.
+#[derive(Debug, Default)]
+pub struct ListReportsParams {
+    /// Maximum records per page (server default: 20).
+    pub limit: Option<i32>,
+    /// Number of records to skip.
+    pub offset: Option<i32>,
+}
+
+/// A missing transaction detail in a reconciliation report.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct MissingTransaction {
+    pub id: Uuid,
+    pub stellar_account: String,
+    pub amount: String,
+    pub asset_code: String,
+    pub memo: Option<String>,
+    pub created_at: DateTime<Utc>,
+}
+
+/// An orphaned payment detail in a reconciliation report.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct OrphanedPayment {
+    pub payment_id: String,
+    pub from: String,
+    pub to: String,
+    pub amount: String,
+    pub asset_code: String,
+    pub memo: Option<String>,
+}
+
+/// An amount mismatch detail in a reconciliation report.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct AmountMismatch {
+    pub transaction_id: Uuid,
+    pub payment_id: String,
+    pub db_amount: String,
+    pub chain_amount: String,
+    pub memo: Option<String>,
+}
+
+/// Full reconciliation report details.
+#[derive(Debug, Clone, Deserialize)]
+pub struct ReconciliationReportDetail {
+    pub id: Uuid,
+    pub generated_at: DateTime<Utc>,
+    pub period_start: DateTime<Utc>,
+    pub period_end: DateTime<Utc>,
+    pub summary: ReconciliationSummary,
+    pub missing_on_chain: Vec<MissingTransaction>,
+    pub orphaned_payments: Vec<OrphanedPayment>,
+    pub amount_mismatches: Vec<AmountMismatch>,
+}
+
+/// Summary statistics in a full reconciliation report.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct ReconciliationSummary {
+    pub total_db_transactions: usize,
+    pub total_chain_payments: usize,
+    pub missing_on_chain_count: i32,
+    pub orphaned_payments_count: i32,
+    pub amount_mismatches_count: i32,
+    pub has_discrepancies: bool,
+}
+
+/// Response from running a reconciliation.
+#[derive(Debug, Clone, Deserialize)]
+pub struct RunReconciliationResponse {
+    pub message: String,
+    pub report: ReconciliationReportSummary,
+}
+
+/// Request to run a reconciliation.
+#[derive(Debug, Serialize)]
+pub struct RunReconciliationRequest {
+    pub account: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub period_hours: Option<i32>,
 }
