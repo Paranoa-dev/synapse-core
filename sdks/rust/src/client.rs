@@ -1,6 +1,8 @@
+use crate::admin::AdminClient;
 use crate::error::SynapseError;
 use crate::retry::{retry_with_backoff, DEFAULT_BASE_DELAY_MS, DEFAULT_MAX_ATTEMPTS};
 use serde::de::DeserializeOwned;
+use serde::Serialize;
 
 /// HTTP client for the Synapse public API.
 ///
@@ -65,6 +67,50 @@ impl SynapseClient {
             }
         })
         .await
+    }
+
+    /// Issue an authenticated PATCH request with a JSON body to `path` and
+    /// deserialize the JSON response.
+    ///
+    /// Subject to the same retry configuration as [`Self::get`]. Only use
+    /// this for idempotent operations — a retried PATCH must be safe to
+    /// apply more than once.
+    pub async fn patch<T: DeserializeOwned, B: Serialize + Clone>(
+        &self,
+        path: &str,
+        body: &B,
+    ) -> Result<T, SynapseError> {
+        let url = format!("{}{}", self.base_url, path);
+        let key = self.api_key.clone();
+        let http = self.http.clone();
+        let body = body.clone();
+        retry_with_backoff(self.max_attempts, self.base_delay_ms, || {
+            let url = url.clone();
+            let key = key.clone();
+            let http = http.clone();
+            let body = body.clone();
+            async move {
+                let resp = http
+                    .patch(&url)
+                    .header("X-API-Key", &key)
+                    .json(&body)
+                    .send()
+                    .await
+                    .map_err(SynapseError::Network)?;
+                let status = resp.status().as_u16();
+                if status >= 400 {
+                    let body = resp.text().await.unwrap_or_default();
+                    return Err(SynapseError::Http { status, body });
+                }
+                resp.json::<T>().await.map_err(SynapseError::Network)
+            }
+        })
+        .await
+    }
+
+    /// Admin-only operations. Requires an API key with admin scope.
+    pub fn admin(&self) -> AdminClient<'_> {
+        AdminClient { client: self }
     }
 }
 
