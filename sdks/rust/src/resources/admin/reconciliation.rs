@@ -7,6 +7,45 @@ use crate::models::{
 use uuid::Uuid;
 
 /// Admin operations for reconciliation reports.
+///
+/// Use this to list, retrieve, and run reconciliation reports for a Synapse deployment.
+/// All reconciliation operations are synchronous — the `run()` method blocks until
+/// reconciliation completes and returns the summary report.
+///
+/// # Example
+///
+/// ```no_run
+/// use synapse_sdk::AdminSynapseClient;
+/// use synapse_sdk::models::ListReportsParams;
+/// use uuid::Uuid;
+///
+/// # #[tokio::main]
+/// # async fn main() {
+/// let admin = AdminSynapseClient::builder("https://api.example.com", "admin-key").build();
+/// let recon = admin.reconciliation();
+///
+/// // List recent reports
+/// let reports = recon.list_reports(ListReportsParams {
+///     limit: Some(50),
+///     offset: Some(0),
+/// }).await.expect("failed to list reports");
+///
+/// println!("Found {} total reports", reports.total);
+///
+/// // Get details of a specific report
+/// if let Some(summary) = reports.reports.first() {
+///     let detail = recon.get_report(summary.id).await.expect("failed to get report");
+///     println!("Report has {} discrepancies", detail.missing_on_chain.len());
+/// }
+///
+/// // Run a new reconciliation
+/// let result = recon.run(
+///     "GABC1234567890123456789012345678901234567890123456789012",
+///     Some(24),  // look back 24 hours
+/// ).await.expect("reconciliation failed");
+/// println!("Reconciliation: {}", result.message);
+/// # }
+/// ```
 pub struct AdminReconciliation<'a> {
     pub(crate) client: &'a AdminSynapseClient,
 }
@@ -14,8 +53,12 @@ pub struct AdminReconciliation<'a> {
 impl<'a> AdminReconciliation<'a> {
     /// List reconciliation reports with optional pagination.
     ///
+    /// Returns a page of reconciliation report summaries. The `limit` and `offset`
+    /// parameters control pagination (server default: limit=20, offset=0).
+    ///
     /// # Errors
-    /// - [`SynapseError::Http`] – server returned an error status.
+    /// - [`SynapseError::Http`] – server returned a 5xx error.
+    /// - [`SynapseError::Api`] – server returned a 4xx error with details.
     /// - [`SynapseError::Network`] – network error.
     /// - [`SynapseError::Decode`] – response body is not valid JSON.
     ///
@@ -28,16 +71,25 @@ impl<'a> AdminReconciliation<'a> {
     /// # #[tokio::main]
     /// # async fn main() {
     /// let client = AdminSynapseClient::builder("https://api.example.com", "admin-key").build();
-    /// let reconciliation = AdminReconciliation::new(&client);
+    /// let reconciliation = client.reconciliation();
     ///
+    /// // Fetch first 25 reports
     /// let params = ListReportsParams {
-    ///     limit: Some(50),
+    ///     limit: Some(25),
     ///     offset: Some(0),
     /// };
     ///
     /// match reconciliation.list_reports(params).await {
-    ///     Ok(reports) => println!("Total reports: {}", reports.total),
-    ///     Err(e) => eprintln!("Error: {}", e),
+    ///     Ok(page) => {
+    ///         println!("Found {} total reports, showing {} on this page",
+    ///                  page.total, page.reports.len());
+    ///         for report in &page.reports {
+    ///             if report.has_discrepancies {
+    ///                 println!("⚠️  Report {} has discrepancies", report.id);
+    ///             }
+    ///         }
+    ///     }
+    ///     Err(e) => eprintln!("Failed to list reports: {}", e),
     /// }
     /// # }
     /// ```
@@ -68,10 +120,16 @@ impl<'a> AdminReconciliation<'a> {
             .await
     }
 
-    /// Get a single reconciliation report by ID.
+    /// Get a single reconciliation report by ID with full details.
+    ///
+    /// Returns the complete report including all discrepancy details:
+    /// - Missing transactions (in database but not on chain)
+    /// - Orphaned payments (on chain but not in database)
+    /// - Amount mismatches (different amounts in DB vs chain)
     ///
     /// # Errors
-    /// - [`SynapseError::Http`] – server returned an error status (e.g., 404 if not found).
+    /// - [`SynapseError::Api`] with status 404 – report not found.
+    /// - [`SynapseError::Http`] – server returned a 5xx error.
     /// - [`SynapseError::Network`] – network error.
     /// - [`SynapseError::Decode`] – response body is not valid JSON.
     ///
@@ -79,16 +137,27 @@ impl<'a> AdminReconciliation<'a> {
     ///
     /// ```no_run
     /// use synapse_sdk::AdminSynapseClient;
+    /// use synapse_sdk::SynapseError;
     /// use uuid::Uuid;
     ///
     /// # #[tokio::main]
     /// # async fn main() {
     /// let client = AdminSynapseClient::builder("https://api.example.com", "admin-key").build();
-    /// let reconciliation = AdminReconciliation::new(&client);
+    /// let reconciliation = client.reconciliation();
     ///
-    /// let report_id = Uuid::nil();
+    /// let report_id = Uuid::parse_str("550e8400-e29b-41d4-a716-446655440000").unwrap();
+    ///
     /// match reconciliation.get_report(report_id).await {
-    ///     Ok(report) => println!("Report generated at: {}", report.generated_at),
+    ///     Ok(report) => {
+    ///         println!("Report {}", report.id);
+    ///         println!("Missing on chain: {}", report.missing_on_chain.len());
+    ///         for tx in &report.missing_on_chain {
+    ///             println!("  - Amount: {}, Account: {}", tx.amount, tx.stellar_account);
+    ///         }
+    ///     }
+    ///     Err(SynapseError::Api { status: 404, .. }) => {
+    ///         eprintln!("Report not found");
+    ///     }
     ///     Err(e) => eprintln!("Error: {}", e),
     /// }
     /// # }
@@ -101,13 +170,23 @@ impl<'a> AdminReconciliation<'a> {
         self.client.get::<ReconciliationReportDetail>(&path).await
     }
 
-    /// Run a reconciliation for the specified account.
+    /// Run a reconciliation for the specified Stellar account.
     ///
-    /// This method blocks until the reconciliation completes and returns the report summary.
-    /// The `period_hours` parameter controls the lookback window (default: 24 hours).
+    /// This method blocks until the reconciliation completes and returns a report summary.
+    /// For full details of discrepancies, call [`get_report`] with the returned report ID.
+    ///
+    /// # Parameters
+    /// - `account`: Stellar account to reconcile (e.g., `G...`)
+    /// - `period_hours`: Lookback window in hours. If `None`, defaults to 24 hours.
+    ///
+    /// # Semantics
+    /// **This is a synchronous/blocking operation**: the API endpoint runs reconciliation
+    /// immediately and returns the complete report summary. It does not return a task ID
+    /// to poll later.
     ///
     /// # Errors
-    /// - [`SynapseError::Http`] – server returned an error status (e.g., 400 if account is invalid).
+    /// - [`SynapseError::Api`] with status 400 – invalid account format or server validation error.
+    /// - [`SynapseError::Http`] – server returned a 5xx error.
     /// - [`SynapseError::Network`] – network error.
     /// - [`SynapseError::Decode`] – response body is not valid JSON.
     ///
@@ -115,18 +194,39 @@ impl<'a> AdminReconciliation<'a> {
     ///
     /// ```no_run
     /// use synapse_sdk::AdminSynapseClient;
+    /// use synapse_sdk::SynapseError;
     ///
     /// # #[tokio::main]
     /// # async fn main() {
     /// let client = AdminSynapseClient::builder("https://api.example.com", "admin-key").build();
-    /// let reconciliation = AdminReconciliation::new(&client);
+    /// let reconciliation = client.reconciliation();
     ///
-    /// match reconciliation.run("GABC1234567890123456789012345678901234567890123456789012", None).await {
+    /// let account = "GABC1234567890123456789012345678901234567890123456789012";
+    ///
+    /// // Run reconciliation for the past 48 hours
+    /// match reconciliation.run(account, Some(48)).await {
     ///     Ok(response) => {
-    ///         println!("Reconciliation completed: {}", response.message);
-    ///         println!("Report ID: {}", response.report.id);
+    ///         println!("✓ Reconciliation completed: {}", response.message);
+    ///         let report = &response.report;
+    ///
+    ///         if report.has_discrepancies {
+    ///             println!("⚠️  Found discrepancies:");
+    ///             println!("  Missing on chain: {}", report.missing_on_chain_count);
+    ///             println!("  Orphaned payments: {}", report.orphaned_payments_count);
+    ///             println!("  Amount mismatches: {}", report.amount_mismatches_count);
+    ///
+    ///             // Fetch full report for details
+    ///             if let Ok(full) = reconciliation.get_report(report.id).await {
+    ///                 println!("Details available via report ID: {}", full.id);
+    ///             }
+    ///         } else {
+    ///             println!("✓ No discrepancies found");
+    ///         }
     ///     }
-    ///     Err(e) => eprintln!("Error: {}", e),
+    ///     Err(SynapseError::Api { status: 400, message }) => {
+    ///         eprintln!("Invalid account or parameters: {}", message);
+    ///     }
+    ///     Err(e) => eprintln!("Reconciliation error: {}", e),
     /// }
     /// # }
     /// ```
