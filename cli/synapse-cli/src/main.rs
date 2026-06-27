@@ -162,29 +162,63 @@ enum Commands {
 
 #[derive(Subcommand)]
 enum TransactionsCmd {
-    /// Export transactions with optional filters
+    /// Export transactions to CSV or JSON format with optional filters.
+    ///
+    /// The export command streams raw transaction data without parsing or modification.
+    /// Output is written to stdout by default, or to a file with --output.
+    ///
+    /// All filter flags are optional. When omitted, no filter is applied for that dimension.
+    ///
+    /// Output format:
+    /// - CSV (default): Raw comma-separated values with headers, suitable for spreadsheet import
+    /// - JSON: Wrapped in a JSON object with metadata, each row as a JSON object
+    ///
+    /// Example:
+    ///   synapse transactions export
+    ///   synapse transactions export --format json --status pending
+    ///   synapse transactions export --from 2024-01-01 --to 2024-12-31 --output export.csv
+    #[command(about = "Export transactions with optional filters")]
+    #[command(long_about = "Export transactions to CSV or JSON format with optional filters.\n\n\
+                             The export command streams raw transaction data without parsing.\n\
+                             Output is written to stdout by default, or to a file with --output.\n\n\
+                             All filter flags are optional:\n\n  \
+                             * --format: Export format (csv or json, default: csv)\n  \
+                             * --from: Start date filter inclusive (YYYY-MM-DD format)\n  \
+                             * --to: End date filter inclusive (YYYY-MM-DD format)\n  \
+                             * --status: Filter by transaction status (e.g., pending, completed)\n  \
+                             * --asset-code: Filter by asset code (e.g., USD, EUR, USDC)\n  \
+                             * --output: Save to file instead of stdout")]
     Export {
-        /// Export format (csv or json)
+        /// Export format: 'csv' (default) or 'json'
+        /// CSV output contains headers with raw transaction data suitable for spreadsheet import.
+        /// JSON output wraps data in a JSON object with optional metadata.
         #[arg(long, default_value = "csv")]
         format: String,
 
-        /// Start date filter (YYYY-MM-DD)
+        /// Start date filter (inclusive). Format: YYYY-MM-DD. Optional.
+        /// Only transactions created on or after this date are included.
         #[arg(long)]
         from: Option<String>,
 
-        /// End date filter (YYYY-MM-DD)
+        /// End date filter (inclusive). Format: YYYY-MM-DD. Optional.
+        /// Only transactions created on or before this date are included.
         #[arg(long)]
         to: Option<String>,
 
-        /// Filter by transaction status
+        /// Filter by transaction status. Optional.
+        /// Example values: pending, completed, failed, cancelled.
+        /// Only transactions with the specified status are included.
         #[arg(long)]
         status: Option<String>,
 
-        /// Filter by asset code
+        /// Filter by asset code. Optional.
+        /// Example values: USD, EUR, USDC, BRL.
+        /// Only transactions for the specified asset are included.
         #[arg(long)]
         asset_code: Option<String>,
 
-        /// Output file path (default: stdout)
+        /// Output file path. Optional. Default: stdout.
+        /// If specified, the export is written to this file instead of stdout.
         #[arg(long)]
         output: Option<String>,
     },

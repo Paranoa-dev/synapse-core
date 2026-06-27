@@ -33,19 +33,47 @@ synapse --url http://localhost:3000 --api-key your-api-key [COMMAND]
 
 #### Export Transactions
 
-Export transactions with optional filters to CSV or JSON format.
+Export transactions to CSV or JSON format with optional filters. The export streams raw data without parsing or modification.
 
 ```bash
 synapse transactions export [OPTIONS]
 ```
 
-**Options:**
+**Options (all optional):**
 - `--format <FORMAT>`: Export format - `csv` (default) or `json`
-- `--from <FROM>`: Start date filter (YYYY-MM-DD)
-- `--to <TO>`: End date filter (YYYY-MM-DD)
-- `--status <STATUS>`: Filter by transaction status (e.g., pending, completed)
-- `--asset-code <ASSET_CODE>`: Filter by asset code (e.g., USD, EUR)
+  - CSV: Raw comma-separated values with headers, suitable for spreadsheet import
+  - JSON: Wrapped in a JSON object, each row as a JSON object with metadata
+- `--from <FROM>`: Start date filter (inclusive, YYYY-MM-DD format)
+- `--to <TO>`: End date filter (inclusive, YYYY-MM-DD format)
+- `--status <STATUS>`: Filter by transaction status (e.g., `pending`, `completed`, `failed`, `cancelled`)
+- `--asset-code <ASSET_CODE>`: Filter by asset code (e.g., `USD`, `EUR`, `USDC`, `BRL`)
 - `--output <OUTPUT>`: Save to file instead of stdout
+
+**Output Format:**
+
+CSV format (default):
+```
+id,stellar_account,amount,asset_code,status,created_at,updated_at,anchor_transaction_id,callback_type,callback_status
+550e8400-e29b-41d4-a716-446655440000,GAAA...,100.00,USD,completed,2024-01-15T10:30:00Z,2024-01-15T11:00:00Z,,send,completed
+550e8401-e29b-41d4-a716-446655440001,GBBB...,250.50,EUR,pending,2024-01-15T11:30:00Z,2024-01-15T11:30:00Z,,receive,pending
+```
+
+JSON format:
+```json
+{
+  "data": [
+    {
+      "id": "550e8400-e29b-41d4-a716-446655440000",
+      "stellar_account": "GAAA...",
+      "amount": "100.00",
+      "asset_code": "USD",
+      "status": "completed",
+      "created_at": "2024-01-15T10:30:00Z",
+      "updated_at": "2024-01-15T11:00:00Z"
+    }
+  ]
+}
+```
 
 **Examples:**
 
@@ -59,10 +87,28 @@ Export pending USD transactions as JSON:
 synapse transactions export --format json --status pending --asset-code USD
 ```
 
-Export transactions from last 30 days to a file:
+Export transactions from January 2024 as CSV:
 ```bash
-synapse transactions export --from 2024-01-01 --to 2024-01-31 --output transactions.csv
+synapse transactions export --from 2024-01-01 --to 2024-01-31
 ```
+
+Export completed EUR transactions to a file:
+```bash
+synapse transactions export --status completed --asset-code EUR --output completed_eur.csv
+```
+
+Export all EUR and USD transactions in the last 30 days (requires two commands):
+```bash
+synapse transactions export --asset-code USD --from 2024-01-01 > usd_export.csv
+synapse transactions export --asset-code EUR --from 2024-01-01 > eur_export.csv
+```
+
+**Notes:**
+- The export endpoint streams raw data without intermediate parsing
+- Large exports are streamed efficiently without loading entire dataset into memory
+- Date filters are inclusive on both ends (from date and to date both included)
+- Empty filter results still return valid CSV/JSON with headers (CSV) or empty data array (JSON)
+- File output is useful for large exports that may not fit in terminal output
 
 ### Settlements
 
