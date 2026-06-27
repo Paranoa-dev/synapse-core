@@ -1,6 +1,6 @@
 use crate::client::SynapseClient;
 use crate::error::SynapseError;
-use crate::models::{ListParams, SearchParams, Transaction, TransactionList, TransactionSearch};
+use crate::models::{ListParams, SearchParams, Transaction, TransactionExportFilters, TransactionList, TransactionSearch};
 
 pub struct Transactions<'a> {
     pub(crate) client: &'a SynapseClient,
@@ -15,8 +15,7 @@ impl<'a> Transactions<'a> {
     ///
     /// # Errors
     /// - [`SynapseError::NotFound`] – no transaction with this ID exists (HTTP 404).
-    /// - [`SynapseError::Api`] – server returned another non-success status.
-    /// - [`SynapseError::Http`] – network error.
+    /// - [`SynapseError::Http`] – server returned another non-success status.
     /// - [`SynapseError::Decode`] – response body is not valid JSON.
     ///
     /// # Example
@@ -38,10 +37,7 @@ impl<'a> Transactions<'a> {
     pub async fn get(&self, id: &str) -> Result<Transaction, SynapseError> {
         let path = format!("/transactions/{}", id);
         match self.client.get::<Transaction>(&path).await {
-            Err(SynapseError::Api {
-                status: 404,
-                message,
-            }) => Err(SynapseError::NotFound(message)),
+            Err(SynapseError::Http { status: 404, body }) => Err(SynapseError::NotFound(body)),
             other => other,
         }
     }
@@ -59,8 +55,7 @@ impl<'a> Transactions<'a> {
     ///
     /// # Errors
     /// - [`SynapseError::InvalidCursor`] – the cursor is malformed or expired (HTTP 400).
-    /// - [`SynapseError::Api`] – server returned another non-success status.
-    /// - [`SynapseError::Http`] – network error.
+    /// - [`SynapseError::Http`] – server returned another non-success status.
     /// - [`SynapseError::Decode`] – response body is not valid JSON.
     ///
     /// # Example
@@ -130,10 +125,9 @@ impl<'a> Transactions<'a> {
             .get_query::<TransactionList>("/transactions", &query)
             .await
         {
-            Err(SynapseError::Api {
-                status: 400,
-                message,
-            }) if message.contains("cursor") => Err(SynapseError::InvalidCursor(message)),
+            Err(SynapseError::Http { status: 400, body }) if body.contains("cursor") => {
+                Err(SynapseError::InvalidCursor(body))
+            }
             other => other,
         }
     }
@@ -150,8 +144,7 @@ impl<'a> Transactions<'a> {
     ///
     /// # Errors
     /// - [`SynapseError::InvalidCursor`] – the cursor is malformed or expired (HTTP 400).
-    /// - [`SynapseError::Api`] – server returned another non-success status.
-    /// - [`SynapseError::Http`] – network error.
+    /// - [`SynapseError::Http`] – server returned another non-success status.
     /// - [`SynapseError::Decode`] – response body is not valid JSON.
     ///
     /// # Example
@@ -211,12 +204,57 @@ impl<'a> Transactions<'a> {
             .get_query::<TransactionSearch>("/transactions/search", &query)
             .await
         {
-            Err(SynapseError::Api {
-                status: 400,
-                message,
-            }) if message.contains("cursor") => Err(SynapseError::InvalidCursor(message)),
+            Err(SynapseError::Http { status: 400, body }) if body.contains("cursor") => {
+                Err(SynapseError::InvalidCursor(body))
+            }
             other => other,
         }
+    }
+
+    /// Export transactions using raw bytes from the server response.
+    ///
+    /// This method returns the raw CSV/JSON payload untouched. Callers should
+    /// parse the bytes themselves and must not rely on the SDK to interpret
+    /// formatted export rows.
+    ///
+    /// # Example
+    ///
+    /// ```no_run
+    /// use synapse_sdk::{SynapseClient, TransactionExportFilters};
+    ///
+    /// # #[tokio::main]
+    /// # async fn main() {
+    /// let client = SynapseClient::new("https://api.example.com", "your-api-key");
+    /// let filters = TransactionExportFilters {
+    ///     format: Some("csv".to_string()),
+    ///     status: Some("completed".to_string()),
+    ///     ..Default::default()
+    /// };
+    ///
+    /// let bytes = client.transactions().export(filters).await.unwrap();
+    /// println!("export size: {} bytes", bytes.len());
+    /// # }
+    /// ```
+    pub async fn export(&self, filters: TransactionExportFilters) -> Result<Vec<u8>, SynapseError> {
+        let mut query: Vec<(&str, &str)> = Vec::new();
+
+        if let Some(ref v) = filters.format {
+            query.push(("format", v.as_str()));
+        }
+        if let Some(ref v) = filters.from {
+            query.push(("from", v.as_str()));
+        }
+        if let Some(ref v) = filters.to {
+            query.push(("to", v.as_str()));
+        }
+        if let Some(ref v) = filters.status {
+            query.push(("status", v.as_str()));
+        }
+        if let Some(ref v) = filters.asset_code {
+            query.push(("asset_code", v.as_str()));
+        }
+
+        self.client.get_query_bytes("/export", &query).await
     }
 }
 
@@ -354,5 +392,31 @@ mod tests {
         assert_eq!(page.total, 0);
         assert!(page.results.is_empty());
         assert!(page.next_cursor.is_none());
+    }
+
+    #[tokio::test]
+    async fn export_returns_raw_bytes() {
+        let server = MockServer::start().await;
+        let body = "id,stellar_account,amount,asset_code,status\n1,GABC,100.00,USD,completed\n";
+
+        Mock::given(method("GET"))
+            .and(path("/export"))
+            .and(header("X-API-Key", "test-key"))
+            .and(query_param("format", "csv"))
+            .respond_with(ResponseTemplate::new(200).set_body_string(body))
+            .mount(&server)
+            .await;
+
+        let client = SynapseClient::new(server.uri(), "test-key");
+        let bytes = client
+            .transactions()
+            .export(crate::models::TransactionExportFilters {
+                format: Some("csv".to_string()),
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+
+        assert_eq!(bytes, body.as_bytes());
     }
 }
