@@ -144,9 +144,15 @@ impl<'a> Transactions<'a> {
     /// fields supplied; omitted fields leave that dimension unfiltered. Uses
     /// the standard public client (`X-API-Key`).
     ///
-    /// A search that matches nothing is **not** an error: it returns a
-    /// [`TransactionSearch`] with `total == 0` and an empty `results` page.
-    /// Use `next_cursor` to page through larger result sets.
+    /// # Zero matches
+    ///
+    /// A search that matches nothing is **not** an error. The API returns a
+    /// [`TransactionSearch`] with `total == 0`, an empty `results` page, and
+    /// `next_cursor == None`. The SDK surfaces this as a successful `Ok` value
+    /// so callers never need a special error branch for the empty case.
+    ///
+    /// Use `next_cursor` to page through larger result sets; when `next_cursor`
+    /// is `None` the current page is the last one.
     ///
     /// # Errors
     /// - [`SynapseError::InvalidCursor`] – the cursor is malformed or expired (HTTP 400).
@@ -172,6 +178,29 @@ impl<'a> Transactions<'a> {
     ///
     /// let page = client.transactions().search(filters).await.unwrap();
     /// println!("{} total matches, {} on this page", page.total, page.results.len());
+    /// # }
+    /// ```
+    ///
+    /// Check for zero matches by inspecting the returned struct — no error
+    /// matching is required:
+    ///
+    /// ```no_run
+    /// # use synapse_sdk::{SearchParams, SynapseClient};
+    /// # #[tokio::main]
+    /// # async fn main() {
+    /// # let client = SynapseClient::new("https://api.example.com", "your-api-key");
+    /// let page = client
+    ///     .transactions()
+    ///     .search(SearchParams {
+    ///         status: Some("nonexistent".to_string()),
+    ///         ..Default::default()
+    ///     })
+    ///     .await
+    ///     .unwrap();
+    ///
+    /// assert_eq!(page.total, 0);
+    /// assert!(page.results.is_empty());
+    /// assert!(page.next_cursor.is_none());
     /// # }
     /// ```
     pub async fn search(&self, filters: SearchParams) -> Result<TransactionSearch, SynapseError> {
