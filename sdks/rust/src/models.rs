@@ -60,6 +60,45 @@ pub struct TransactionSearch {
     pub next_cursor: Option<String>,
 }
 
+/// A single settlement returned by the API.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct Settlement {
+    pub id: String,
+    pub asset_code: String,
+    pub total_amount: String,
+    pub tx_count: i32,
+    pub period_start: DateTime<Utc>,
+    pub period_end: DateTime<Utc>,
+    pub status: String,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+    pub dispute_reason: Option<String>,
+    pub original_total_amount: Option<String>,
+    pub reviewed_by: Option<String>,
+    pub reviewed_at: Option<DateTime<Utc>>,
+}
+
+/// Paginated list of settlements.
+#[derive(Debug, Clone, Deserialize)]
+pub struct SettlementList {
+    pub settlements: Vec<Settlement>,
+    pub next_cursor: Option<String>,
+    pub has_more: bool,
+}
+
+/// Query parameters for [`Settlements::list`].
+///
+/// All fields are optional; omit a field to accept the server's default.
+#[derive(Debug, Default)]
+pub struct SettlementParams {
+    /// Opaque pagination cursor from a previous response's `next_cursor`.
+    pub cursor: Option<String>,
+    /// Maximum records per page (server default: 10, max: 100).
+    pub limit: Option<i64>,
+    /// Sort direction: `"forward"` (default) or `"backward"`.
+    pub direction: Option<String>,
+}
+
 /// Query parameters for [`Transactions::list`].
 #[derive(Debug, Default)]
 pub struct ListParams {

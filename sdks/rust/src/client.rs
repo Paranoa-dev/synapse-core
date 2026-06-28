@@ -1,4 +1,5 @@
 use crate::error::SynapseError;
+use crate::resources::settlements::Settlements;
 use crate::admin::AdminClient;
 use crate::error::{
     map_status_to_error, parse_api_error, CatalogEntry, CatalogResponse, SynapseError,
@@ -47,6 +48,11 @@ impl SynapseClient {
     /// Access the transactions resource.
     pub fn transactions(&self) -> Transactions<'_> {
         Transactions { client: self }
+    }
+
+    /// Access the settlements resource.
+    pub fn settlements(&self) -> Settlements<'_> {
+        Settlements { client: self }
     }
 
     /// Return a builder for constructing a [`SynapseClient`].
