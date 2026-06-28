@@ -1,3 +1,4 @@
+use crate::error::SynapseError;
 use crate::admin::AdminClient;
 use crate::error::{
     map_status_to_error, parse_api_error, CatalogEntry, CatalogResponse, SynapseError,
@@ -10,6 +11,8 @@ use serde::Serialize;
 /// HTTP client for the Synapse public API.
 ///
 /// Construct via [`SynapseClient::new`] or [`SynapseClient::builder`]. All
+/// requests are issued with the configured API key and are retried automatically
+/// on transient failures.
 /// requests are issued with the configured API key and are retried
 /// automatically on transient failures.
 #[derive(Clone)]
@@ -33,9 +36,17 @@ pub struct SynapseClientBuilder {
 }
 
 impl SynapseClient {
+    /// Create a new [`SynapseClient`] with default retry settings.
+    ///
+    /// Equivalent to `SynapseClient::builder(base_url, api_key).build()`.
     /// Convenience constructor; equivalent to `SynapseClient::builder(base_url, api_key).build()`.
     pub fn new(base_url: impl Into<String>, api_key: impl Into<String>) -> Self {
         Self::builder(base_url, api_key).build()
+    }
+
+    /// Access the transactions resource.
+    pub fn transactions(&self) -> Transactions<'_> {
+        Transactions { client: self }
     }
 
     /// Return a builder for constructing a [`SynapseClient`].
@@ -318,6 +329,9 @@ mod tests {
     }
 
     /// Issue an authenticated GET request with query parameters and deserialize the JSON response.
+    ///
+    /// The request is retried automatically according to the client's retry
+    /// configuration. 4xx responses are returned immediately without retrying.
     pub async fn get_query<T: DeserializeOwned>(
         &self,
         path: &str,
@@ -326,6 +340,7 @@ mod tests {
         let url = format!("{}{}", self.base_url, path);
         let key = self.api_key.clone();
         let http = self.http.clone();
+        let query = query.to_vec();
         let query: Vec<(String, String)> = query
             .iter()
             .map(|(k, v)| (k.to_string(), v.to_string()))
@@ -338,6 +353,8 @@ mod tests {
             async move {
                 let resp = http
                     .get(&url)
+                    .header("X-API-Key", &key)
+                    .query(&query)
                     .query(&query)
                     .header("X-API-Key", &key)
                     .send()
